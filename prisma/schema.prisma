@@ -1,0 +1,68 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// 被监控的钱包地址（疑似内幕交易）
+model MonitoredWallet {
+  id            String       @id @default(cuid())
+  address       String       @unique // 钱包地址
+  riskScore     Float        @default(0) // 风险评分 (0-100)
+  fundingSource String?      // 资金来源
+  lastActiveAt  DateTime?    // 最后活跃时间
+  createdAt     DateTime     @default(now()) // 创建时间
+  updatedAt     DateTime     @updatedAt // 更新时间
+  
+  // 关联的交易事件
+  tradeEvents   TradeEvent[]
+  
+  @@index([address])
+  @@index([riskScore])
+  @@index([lastActiveAt])
+  @@map("monitored_wallets")
+}
+
+// 交易事件记录
+model TradeEvent {
+  id            String          @id @default(cuid())
+  marketId      String          // 市场ID
+  amount        Float           // 交易金额
+  isBuy         Boolean         // 买入方向 (true=买入, false=卖出)
+  timestamp     DateTime        // 交易时间戳
+  createdAt     DateTime        @default(now()) // 记录创建时间
+  
+  // 关联到被监控的钱包
+  walletId      String
+  wallet        MonitoredWallet @relation(fields: [walletId], references: [id], onDelete: Cascade)
+  
+  // 关联到市场
+  market        Market          @relation(fields: [marketId], references: [id], onDelete: Cascade)
+  
+  @@index([walletId])
+  @@index([marketId])
+  @@index([timestamp])
+  @@map("trade_events")
+}
+
+// 市场元数据
+model Market {
+  id        String       @id @default(cuid())
+  title     String       // 市场标题
+  volume    Float        @default(0) // 交易量
+  endDate   DateTime?    // 结束日期
+  createdAt DateTime     @default(now()) // 创建时间
+  updatedAt DateTime     @updatedAt // 更新时间
+  
+  // 关联的交易事件
+  tradeEvents TradeEvent[]
+  
+  @@index([endDate])
+  @@map("markets")
+}
