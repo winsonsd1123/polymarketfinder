@@ -38,6 +38,7 @@ export const TABLES = {
   MONITORED_WALLETS: 'monitored_wallets',
   TRADE_EVENTS: 'trade_events',
   MARKETS: 'markets',
+  SCAN_LOGS: 'scan_logs',
 } as const;
 
 /**
@@ -69,6 +70,22 @@ export interface TradeEvent {
   amount: number;
   isBuy: boolean;
   timestamp: string;
+  createdAt: string;
+}
+
+export interface ScanLog {
+  id: string;
+  startedAt: string;
+  completedAt: string | null;
+  durationMs: number | null;
+  totalTrades: number;
+  processedWallets: number;
+  newWallets: number;
+  suspiciousWallets: number;
+  skippedWallets: number;
+  errors: number;
+  success: boolean;
+  errorMessage: string | null;
   createdAt: string;
 }
 

@@ -165,6 +165,7 @@ export async function GET(request: NextRequest) {
     }
   }
   const startTime = Date.now();
+  const scanStartTime = new Date().toISOString();
   const result: ScanResult = {
     totalTrades: 0,
     processedWallets: 0,
@@ -178,6 +179,25 @@ export async function GET(request: NextRequest) {
       errors: [],
     },
   };
+
+  // 创建扫描日志记录
+  let scanLogId: string | null = null;
+  try {
+    const { data: scanLog, error: logError } = await supabase
+      .from(TABLES.SCAN_LOGS)
+      .insert({
+        started_at: scanStartTime,
+        success: true,
+      })
+      .select('id')
+      .single();
+    
+    if (!logError && scanLog) {
+      scanLogId = scanLog.id;
+    }
+  } catch (error) {
+    console.warn('创建扫描日志失败:', error);
+  }
 
   try {
     // 获取查询参数
@@ -249,6 +269,24 @@ export async function GET(request: NextRequest) {
     console.log(`   错误数: ${result.errors}`);
     console.log(`   耗时: ${duration}ms`);
 
+    // 更新扫描日志
+    if (scanLogId) {
+      await supabase
+        .from(TABLES.SCAN_LOGS)
+        .update({
+          completed_at: new Date().toISOString(),
+          duration_ms: duration,
+          total_trades: result.totalTrades,
+          processed_wallets: result.processedWallets,
+          new_wallets: result.newWallets,
+          suspicious_wallets: result.suspiciousWallets,
+          skipped_wallets: result.skippedWallets,
+          errors: result.errors,
+          success: true,
+        })
+        .eq('id', scanLogId);
+    }
+
     return NextResponse.json({
       success: true,
       message: '扫描完成',
@@ -257,7 +295,27 @@ export async function GET(request: NextRequest) {
     });
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
+    const duration = Date.now() - startTime;
     console.error('扫描过程中出错:', errorMessage);
+
+    // 更新扫描日志（失败）
+    if (scanLogId) {
+      await supabase
+        .from(TABLES.SCAN_LOGS)
+        .update({
+          completed_at: new Date().toISOString(),
+          duration_ms: duration,
+          total_trades: result.totalTrades,
+          processed_wallets: result.processedWallets,
+          new_wallets: result.newWallets,
+          suspicious_wallets: result.suspiciousWallets,
+          skipped_wallets: result.skippedWallets,
+          errors: result.errors,
+          success: false,
+          error_message: errorMessage,
+        })
+        .eq('id', scanLogId);
+    }
 
     return NextResponse.json(
       {
@@ -265,7 +323,7 @@ export async function GET(request: NextRequest) {
         message: '扫描失败',
         error: errorMessage,
         result,
-        duration: Date.now() - startTime,
+        duration,
       },
       { status: 500 }
     );

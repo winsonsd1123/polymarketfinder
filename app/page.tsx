@@ -42,6 +42,22 @@ interface Trade {
   createdAt: string;
 }
 
+interface ScanLog {
+  id: string;
+  startedAt: string;
+  completedAt: string | null;
+  durationMs: number | null;
+  totalTrades: number;
+  processedWallets: number;
+  newWallets: number;
+  suspiciousWallets: number;
+  skippedWallets: number;
+  errors: number;
+  success: boolean;
+  errorMessage: string | null;
+  createdAt: string;
+}
+
 export default function Home() {
   const [wallets, setWallets] = useState<Wallet[]>([]);
   const [loading, setLoading] = useState(true);
@@ -50,6 +66,8 @@ export default function Home() {
   const [selectedWallet, setSelectedWallet] = useState<Wallet | null>(null);
   const [walletTrades, setWalletTrades] = useState<Trade[]>([]);
   const [loadingTrades, setLoadingTrades] = useState(false);
+  const [scanLogs, setScanLogs] = useState<ScanLog[]>([]);
+  const [loadingScanLogs, setLoadingScanLogs] = useState(false);
 
   // 获取钱包列表
   const fetchWallets = async () => {
@@ -63,6 +81,22 @@ export default function Home() {
       console.error('获取钱包列表失败:', error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  // 获取扫描日志
+  const fetchScanLogs = async () => {
+    setLoadingScanLogs(true);
+    try {
+      const response = await fetch('/api/scan-logs?limit=5');
+      const data = await response.json();
+      if (data.success) {
+        setScanLogs(data.data);
+      }
+    } catch (error) {
+      console.error('获取扫描日志失败:', error);
+    } finally {
+      setLoadingScanLogs(false);
     }
   };
 
@@ -80,8 +114,8 @@ export default function Home() {
       // 等待一下再获取最新数据
       await new Promise((resolve) => setTimeout(resolve, 1000));
 
-      // 重新获取钱包列表
-      await fetchWallets();
+      // 重新获取钱包列表和扫描日志
+      await Promise.all([fetchWallets(), fetchScanLogs()]);
     } catch (error) {
       console.error('刷新失败:', error);
     } finally {
@@ -117,6 +151,7 @@ export default function Home() {
 
   useEffect(() => {
     fetchWallets();
+    fetchScanLogs();
   }, []);
 
   if (loading) {
@@ -127,6 +162,9 @@ export default function Home() {
     );
   }
 
+  const latestScan = scanLogs[0];
+  const lastScanTime = latestScan?.completedAt || latestScan?.startedAt;
+
   return (
     <div className="container mx-auto py-8 px-4">
       <div className="mb-6 flex items-center justify-between">
@@ -134,12 +172,88 @@ export default function Home() {
           <h1 className="text-3xl font-bold">内幕钱包监控</h1>
           <p className="mt-2 text-muted-foreground">
             共监控 {wallets.length} 个可疑钱包
+            {lastScanTime && (
+              <span className="ml-4">
+                · 上次扫描: {formatRelativeTime(lastScanTime)}
+              </span>
+            )}
           </p>
         </div>
         <Button onClick={handleRefresh} disabled={refreshing}>
           {refreshing ? '扫描中...' : '刷新'}
         </Button>
       </div>
+
+      {/* 扫描统计信息 */}
+      {latestScan && (
+        <div className="mb-6 rounded-lg border bg-card p-4">
+          <h2 className="mb-3 text-lg font-semibold">最新扫描统计</h2>
+          <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+            <div>
+              <div className="text-sm text-muted-foreground">总交易数</div>
+              <div className="text-2xl font-bold">{latestScan.totalTrades}</div>
+            </div>
+            <div>
+              <div className="text-sm text-muted-foreground">处理钱包数</div>
+              <div className="text-2xl font-bold">{latestScan.processedWallets}</div>
+            </div>
+            <div>
+              <div className="text-sm text-muted-foreground">新发现钱包</div>
+              <div className="text-2xl font-bold text-blue-600">{latestScan.newWallets}</div>
+            </div>
+            <div>
+              <div className="text-sm text-muted-foreground">可疑钱包</div>
+              <div className="text-2xl font-bold text-red-600">{latestScan.suspiciousWallets}</div>
+            </div>
+          </div>
+          {latestScan.durationMs && (
+            <div className="mt-3 text-sm text-muted-foreground">
+              扫描耗时: {(latestScan.durationMs / 1000).toFixed(2)} 秒
+              {latestScan.success === false && latestScan.errorMessage && (
+                <span className="ml-4 text-red-600">
+                  错误: {latestScan.errorMessage}
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* 扫描历史记录 */}
+      {scanLogs.length > 1 && (
+        <div className="mb-6 rounded-lg border bg-card p-4">
+          <h2 className="mb-3 text-lg font-semibold">扫描历史</h2>
+          <div className="space-y-2">
+            {scanLogs.slice(1, 6).map((log) => (
+              <div
+                key={log.id}
+                className="flex items-center justify-between border-b pb-2 text-sm last:border-0"
+              >
+                <div>
+                  <span className="font-medium">
+                    {formatRelativeTime(log.completedAt || log.startedAt)}
+                  </span>
+                  <span className="ml-2 text-muted-foreground">
+                    · {log.totalTrades} 交易 · {log.processedWallets} 钱包
+                  </span>
+                  {log.suspiciousWallets > 0 && (
+                    <span className="ml-2 text-red-600">
+                      · {log.suspiciousWallets} 可疑
+                    </span>
+                  )}
+                </div>
+                <div className="text-muted-foreground">
+                  {log.success ? (
+                    <span className="text-green-600">✓ 成功</span>
+                  ) : (
+                    <span className="text-red-600">✗ 失败</span>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {wallets.length === 0 ? (
         <div className="rounded-lg border p-8 text-center">
