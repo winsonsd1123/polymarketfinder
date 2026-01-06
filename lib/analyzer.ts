@@ -75,101 +75,49 @@ function createPolygonClient(): PublicClient {
 
 /**
  * 获取钱包的第一笔交易时间
- * 使用多种方法尝试获取，包括多个区块链浏览器 API
+ * 使用基于 nonce 的启发式方法，不依赖外部 API（如 Polygonscan）
  */
 async function getFirstTransactionTime(
   client: PublicClient,
   address: Address
 ): Promise<Date | null> {
   try {
-    // 方法1: 尝试使用 Polygonscan API（如果可用）
-    const polygonscanApiKey = process.env.POLYGONSCAN_API_KEY;
-    if (polygonscanApiKey) {
-      try {
-        const response = await fetch(
-          `https://api.polygonscan.com/api?module=account&action=txlist&address=${address}&startblock=0&endblock=99999999&page=1&offset=1&sort=asc&apikey=${polygonscanApiKey}`
-        );
-        const data = await response.json();
-        if (data.status === '1' && data.result && data.result.length > 0) {
-          const firstTx = data.result[0];
-          return new Date(parseInt(firstTx.timeStamp) * 1000);
-        }
-      } catch (error) {
-        console.warn('[Analyzer] Polygonscan API 失败，尝试其他方法:', error);
-      }
+    // 优先方法：使用 nonce 推断钱包年龄（不依赖外部 API）
+    const nonce = await client.getTransactionCount({ address });
+    
+    if (nonce === 0) {
+      // nonce = 0 表示钱包从未发送过交易，可能是全新钱包
+      // 返回当前时间，表示"刚刚创建"
+      console.log(`[Analyzer] 钱包 ${address} nonce=0，推断为新钱包（刚创建）`);
+      return new Date();
     }
 
-    // 方法2: 尝试使用 Alchemy API（免费，无需 API Key 的基础查询）
-    try {
-      const alchemyUrl = process.env.ALCHEMY_POLYGON_URL || 'https://polygon-mainnet.g.alchemy.com/v2/demo';
-      const response = await fetch(alchemyUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          jsonrpc: '2.0',
-          id: 1,
-          method: 'eth_getTransactionCount',
-          params: [address, 'earliest'],
-        }),
-      });
-      const data = await response.json();
-      if (data.result && data.result !== '0x0') {
-        // 有交易，但无法直接获取时间，继续尝试其他方法
+    // 如果 nonce 很小（< 10），使用启发式方法估算钱包年龄
+    if (nonce < 10) {
+      // 启发式规则：
+      // - nonce = 1: 假设钱包创建于 12 小时前（保守估计）
+      // - nonce = 2-5: 假设每笔交易间隔 12-24 小时
+      // - nonce = 6-9: 假设每笔交易间隔 24-48 小时
+      let estimatedAgeHours: number;
+      if (nonce === 1) {
+        estimatedAgeHours = 12; // 保守估计：12小时
+      } else if (nonce <= 5) {
+        estimatedAgeHours = nonce * 12; // 每笔交易间隔12小时
+      } else {
+        estimatedAgeHours = 5 * 12 + (nonce - 5) * 24; // 前5笔每12小时，之后每24小时
       }
-    } catch (error) {
-      // Alchemy 失败，继续
+      
+      const estimatedCreationTime = new Date(Date.now() - estimatedAgeHours * 60 * 60 * 1000);
+      console.log(`[Analyzer] 钱包 ${address} nonce=${nonce}，估算创建时间: ${estimatedCreationTime.toISOString()} (约 ${estimatedAgeHours.toFixed(1)} 小时前)`);
+      return estimatedCreationTime;
     }
 
-    // 方法3: 使用 QuickNode 或其他公共 RPC（如果配置了）
-    try {
-      const quicknodeUrl = process.env.QUICKNODE_POLYGON_URL;
-      if (quicknodeUrl) {
-        const response = await fetch(quicknodeUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            jsonrpc: '2.0',
-            id: 1,
-            method: 'eth_getTransactionCount',
-            params: [address, 'earliest'],
-          }),
-        });
-        const data = await response.json();
-        // QuickNode 通常也提供交易历史查询
-      }
-    } catch (error) {
-      // QuickNode 失败，继续
-    }
-
-    // 方法4: 使用 nonce 推断（如果 nonce = 0，说明是新钱包）
-    try {
-      const nonce = await client.getTransactionCount({ address });
-      if (nonce === 0) {
-        // 新钱包，返回当前时间（这是一个近似值）
-        console.log(`[Analyzer] 钱包 ${address} nonce=0，推断为新钱包`);
-        return new Date();
-      }
-
-      // 方法5: 尝试通过查询最近的区块来估算钱包年龄
-      // 这是一个启发式方法：如果 nonce 很小，可能是新钱包
-      if (nonce < 5) {
-        // 假设钱包创建时间在最近几天内
-        const estimatedAge = nonce * 24; // 假设每笔交易间隔24小时
-        const estimatedCreationTime = new Date(Date.now() - estimatedAge * 60 * 60 * 1000);
-        console.log(`[Analyzer] 钱包 ${address} nonce=${nonce}，估算创建时间: ${estimatedCreationTime.toISOString()}`);
-        return estimatedCreationTime;
-      }
-
-      // 对于交易较多的钱包，无法准确判断创建时间
-      // 返回 null，让调用者知道无法确定
-      console.log(`[Analyzer] 钱包 ${address} nonce=${nonce}，无法准确判断创建时间`);
-      return null;
-    } catch (error) {
-      console.error('[Analyzer] 查询 nonce 失败:', error);
-      return null;
-    }
+    // 对于交易较多的钱包（nonce >= 10），无法准确判断创建时间
+    // 返回 null，让调用者知道无法确定
+    console.log(`[Analyzer] 钱包 ${address} nonce=${nonce}，交易较多，无法准确判断创建时间`);
+    return null;
   } catch (error) {
-    console.error('[Analyzer] 获取第一笔交易时间失败:', error);
+    console.error('[Analyzer] 查询 nonce 失败:', error);
     return null;
   }
 }
@@ -224,11 +172,18 @@ async function getMarketParticipationCount(address: string): Promise<number> {
 
 /**
  * 获取资金来源（第一笔入金交易的发送地址）
+ * 注意：由于 Polygonscan API 不稳定，此功能暂时禁用
+ * 未来可以通过其他方式实现（如 Alchemy、The Graph 等）
  */
 async function getFundingSource(
   client: PublicClient,
   address: Address
 ): Promise<string | null> {
+  // 暂时禁用，因为 Polygonscan API 不稳定
+  // 未来可以考虑使用其他数据源（Alchemy、The Graph 等）
+  return null;
+  
+  /* 原实现（已禁用）
   try {
     const polygonscanApiKey = process.env.POLYGONSCAN_API_KEY;
     if (polygonscanApiKey) {
@@ -249,6 +204,7 @@ async function getFundingSource(
     console.error('获取资金来源失败:', error);
     return null;
   }
+  */
 }
 
 /**
@@ -316,18 +272,9 @@ export async function analyzeWallet(
         details.push(`钱包创建时间: ${ageHours.toFixed(2)} 小时前`);
       }
     } else {
-      // 无法确定钱包创建时间时，使用启发式方法
-      // 如果 nonce 很小（< 5），仍然给予部分分数
-      const nonce = await getTransactionCount(client, walletAddress);
-      if (nonce < 5) {
-        // 给予部分分数（30分），因为很可能是新钱包
-        score += 30;
-        checks.walletAge.score = 30;
-        checks.walletAge.passed = true;
-        details.push(`无法准确确定钱包创建时间，但交易次数很少（${nonce}次），推断可能为新钱包，风险分 +30`);
-      } else {
-        details.push('无法确定钱包创建时间（建议配置 Polygonscan API Key 或 Alchemy 以获得更准确的结果）');
-      }
+      // 无法确定钱包创建时间（nonce >= 10 的情况）
+      // 这种情况下，钱包年龄检查不给予分数
+      details.push(`无法确定钱包创建时间（交易次数较多，nonce >= 10）`);
     }
 
     // 2. 检查交易次数（nonce < 10，+30分）

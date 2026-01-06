@@ -55,6 +55,25 @@ async function processWallet(
       currentTradeTime
     );
 
+    // 打印详细的分值计算过程
+    console.log(`\n📊 钱包分析: ${normalizedAddress}`);
+    console.log(`   总分: ${analysis.score} 分`);
+    console.log(`   是否可疑: ${analysis.isSuspicious ? '✅ 是' : '❌ 否'}`);
+    console.log(`   详细评分:`);
+    console.log(`     - 钱包年龄: ${analysis.checks.walletAge.score} 分 (${analysis.checks.walletAge.ageHours ? `${analysis.checks.walletAge.ageHours.toFixed(2)} 小时` : '未知'})`);
+    console.log(`     - 交易次数: ${analysis.checks.transactionCount.score} 分 (nonce: ${analysis.checks.transactionCount.nonce})`);
+    console.log(`     - 市场参与度: ${analysis.checks.marketParticipation.score} 分 (${analysis.checks.marketParticipation.marketCount} 个市场)`);
+    if (analysis.checks.transactionAmount) {
+      console.log(`     - 交易规模: ${analysis.checks.transactionAmount.score} 分 ($${analysis.checks.transactionAmount.amount.toFixed(2)})`);
+    }
+    if (analysis.checks.wcTxGap) {
+      console.log(`     - WC/TX 时间: ${analysis.checks.wcTxGap.score} 分 (${analysis.checks.wcTxGap.gapPercentage?.toFixed(2)}%)`);
+    }
+    if (analysis.checks.transactionRecency) {
+      console.log(`     - 交易时间: ${analysis.checks.transactionRecency.score} 分 (${analysis.checks.transactionRecency.hoursSinceTransaction?.toFixed(2)} 小时前)`);
+    }
+    console.log(`   详情: ${analysis.details}`);
+
     // 如果可疑（score >= 50），存入数据库（按照截图规则，重点关注新钱包和市场参与度）
     if (analysis.isSuspicious && analysis.score >= 50) {
       // 确保市场存在（使用 asset_id 作为 market id）
@@ -263,7 +282,7 @@ export async function GET(request: NextRequest) {
 
     const duration = Date.now() - startTime;
 
-    console.log(`✅ 扫描完成:`);
+    console.log(`\n✅ 扫描完成:`);
     console.log(`   总交易数: ${result.totalTrades}`);
     console.log(`   处理钱包数: ${result.processedWallets}`);
     console.log(`   新钱包数: ${result.newWallets}`);
@@ -271,6 +290,14 @@ export async function GET(request: NextRequest) {
     console.log(`   跳过钱包数: ${result.skippedWallets}`);
     console.log(`   错误数: ${result.errors}`);
     console.log(`   耗时: ${duration}ms`);
+    
+    // 打印可疑钱包列表
+    if (result.details.suspiciousWallets.length > 0) {
+      console.log(`\n⚠️  可疑钱包列表 (${result.suspiciousWallets} 个):`);
+      result.details.suspiciousWallets.forEach((addr, index) => {
+        console.log(`   ${index + 1}. ${addr}`);
+      });
+    }
 
     // 更新扫描日志
     if (scanLogId) {
