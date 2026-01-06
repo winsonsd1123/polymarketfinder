@@ -71,7 +71,7 @@ export default function Home() {
     setRefreshing(true);
     try {
       // 先触发扫描
-      const scanResponse = await fetch('/api/cron/scan?mock=true', {
+      const scanResponse = await fetch('/api/cron/scan', {
         method: 'GET',
       });
       const scanData = await scanResponse.json();

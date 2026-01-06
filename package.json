@@ -14,8 +14,8 @@
     "auto-scan:loop": "tsx scripts/auto-scan.ts loop"
   },
   "dependencies": {
-    "@prisma/client": "^5.22.0",
     "@radix-ui/react-slot": "^1.2.4",
+    "@supabase/supabase-js": "^2.89.0",
     "axios": "^1.13.2",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
@@ -23,7 +23,6 @@
     "dotenv": "^17.2.3",
     "next": "16.1.1",
     "p-limit": "^7.2.0",
-    "prisma": "^5.22.0",
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "viem": "^2.43.5"

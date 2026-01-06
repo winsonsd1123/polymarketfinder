@@ -34,19 +34,21 @@ class PolymarketClient {
 
   constructor() {
     this.client = axios.create({
-      timeout: 15000,
+      timeout: 30000, // 增加到30秒
       headers: {
         'Content-Type': 'application/json',
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+        'Accept': 'application/json',
       },
     });
   }
 
   /**
    * 使用 The Graph 子图获取最近的交易（链上数据）
+   * 注意：The Graph 端点可能不稳定，优先使用 Data API
    */
   private async fetchTradesFromTheGraph(limit: number): Promise<PolymarketTrade[]> {
-    // The Graph 的 Polymarket 子图端点
+    // The Graph 的 Polymarket 子图端点（可能已废弃或需要认证）
     const endpoints = [
       'https://api.thegraph.com/subgraphs/name/polymarket/polymarket',
       'https://api.studio.thegraph.com/query/polymarket/polymarket/version/latest',
@@ -84,9 +86,10 @@ class PolymarketClient {
             variables: { limit },
           },
           {
-            timeout: 15000,
+            timeout: 30000, // 增加到30秒
             headers: {
               'Content-Type': 'application/json',
+              'Accept': 'application/json',
             },
           }
         );
@@ -118,13 +121,14 @@ class PolymarketClient {
 
   /**
    * 使用 CLOB API 获取最近的交易
+   * 根据官方文档：https://docs.polymarket.com/developers/CLOB/trades/trades
+   * 端点：GET /trades
    */
   private async fetchTradesFromCLOB(limit: number): Promise<PolymarketTrade[]> {
-    // CLOB API 可能的端点
+    // CLOB API 官方端点（根据文档）
     const endpoints = [
-      'https://clob.polymarket.com/fills',
-      'https://clob.polymarket.com/v1/fills',
-      'https://clob.polymarket.com/api/fills',
+      'https://clob.polymarket.com/trades', // 官方端点
+      'https://clob.polymarket.com/v1/trades',
     ];
 
     for (const endpoint of endpoints) {
@@ -135,10 +139,11 @@ class PolymarketClient {
             limit,
             offset: 0,
           },
-          timeout: 15000,
+          timeout: 30000, // 增加到30秒
           headers: {
             'Accept': 'application/json',
             'Content-Type': 'application/json',
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
           },
         });
 
@@ -165,67 +170,189 @@ class PolymarketClient {
 
   /**
    * 使用 Data API 获取最近的交易
+   * 根据官方文档：https://docs.polymarket.com/quickstart/overview
+   * Data API 用于查询用户持仓、交易历史、投资组合数据
+   * 端点：https://data-api.polymarket.com/trades
+   * 
+   * @param limit 获取的交易数量（最大 500）
+   * @param retries 重试次数（默认 2 次）
+   * @returns 交易列表
    */
-  private async fetchTradesFromDataAPI(limit: number): Promise<PolymarketTrade[]> {
+  private async fetchTradesFromDataAPI(limit: number, retries: number = 2): Promise<PolymarketTrade[]> {
+    const startTime = Date.now();
+    // Data API 官方端点（已验证可用）
     const endpoints = [
-      'https://data-api.polymarket.com/trades',
-      'https://data-api.polymarket.com/v1/trades',
-      'https://data-api.polymarket.com/api/trades',
+      'https://data-api.polymarket.com/trades', // 主要端点
     ];
 
     for (const endpoint of endpoints) {
-      try {
-        console.log(`[Polymarket API] 尝试 Data API 端点: ${endpoint}`);
-        const response = await axios.get(endpoint, {
-          params: {
-            limit,
-            offset: 0,
-          },
-          timeout: 15000,
-          headers: {
-            'Accept': 'application/json',
-          },
-        });
+      for (let attempt = 0; attempt <= retries; attempt++) {
+        try {
+          if (attempt > 0) {
+            console.log(`[Polymarket API] 重试 Data API 端点 (${attempt}/${retries}): ${endpoint}`);
+            // 指数退避：1秒、2秒
+            await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+          } else {
+            console.log(`[Polymarket API] 尝试 Data API 端点: ${endpoint}`);
+          }
+          
+          const response = await axios.get(endpoint, {
+            params: {
+              limit: Math.min(limit, 500), // Data API 可能有限制，最大 500
+              offset: 0,
+            },
+            timeout: 30000,
+            headers: {
+              'Accept': 'application/json',
+              'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+            },
+            validateStatus: (status) => status < 500, // 接受 4xx 错误，但不重试 5xx
+          });
 
-        // Data API 返回的是数组，不是嵌套对象
-        const trades = Array.isArray(response.data) ? response.data : (response.data.trades || response.data.data || []);
-        if (Array.isArray(trades) && trades.length > 0) {
-          console.log(`[Polymarket API] ✅ 从 Data API 获取到 ${trades.length} 条交易`);
-          return trades
-            .map((trade: any) => {
-              // Data API 格式: proxyWallet, asset, size, price, timestamp
-              const makerAddress = trade.proxyWallet || trade.maker_address || trade.maker || trade.user || trade.userAddress || '';
-              const assetId = trade.asset || trade.asset_id || trade.assetId || trade.market_id || trade.marketId || trade.conditionId || '';
-              // 计算金额: size * price
-              const amount = trade.size && trade.price 
-                ? parseFloat(trade.size) * parseFloat(trade.price)
-                : parseFloat(trade.amount_usdc || trade.amount || trade.amountUsdc || trade.value || '0');
-              // timestamp 可能是秒级时间戳
-              const timestamp = trade.timestamp 
-                ? (typeof trade.timestamp === 'number' && trade.timestamp < 10000000000
-                    ? new Date(trade.timestamp * 1000).toISOString()
-                    : new Date(trade.timestamp).toISOString())
-                : (trade.created_at || trade.time || trade.createdAt || new Date().toISOString());
-              
-              return {
-                maker_address: makerAddress,
-                asset_id: assetId,
-                amount_usdc: amount,
-                timestamp: timestamp,
-                side: (trade.side === 'BUY' || trade.side === 'SELL') ? trade.side : undefined,
-                title: trade.title || trade.slug || undefined,
-                conditionId: trade.conditionId || undefined,
-              };
-            })
-            .filter((trade: PolymarketTrade) => trade.maker_address && trade.asset_id && trade.timestamp);
+          // 检查 HTTP 状态码
+          if (response.status >= 400) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+          }
+
+          // Data API 返回的是数组，不是嵌套对象
+          const trades = Array.isArray(response.data) 
+            ? response.data 
+            : (response.data?.trades || response.data?.data || []);
+          
+          if (Array.isArray(trades) && trades.length > 0) {
+            const duration = Date.now() - startTime;
+            console.log(
+              `[Polymarket API] ✅ 从 Data API 获取到 ${trades.length} 条交易 ` +
+              `(耗时: ${duration}ms, 端点: ${endpoint})`
+            );
+            
+            const processedTrades = trades
+              .map((trade: any) => {
+                try {
+                  // Data API 格式: proxyWallet, asset, size, price, timestamp
+                  const makerAddress = (
+                    trade.proxyWallet || 
+                    trade.maker_address || 
+                    trade.maker || 
+                    trade.user || 
+                    trade.userAddress || 
+                    ''
+                  ).toLowerCase().trim();
+                  
+                  const assetId = (
+                    trade.asset || 
+                    trade.asset_id || 
+                    trade.assetId || 
+                    trade.market_id || 
+                    trade.marketId || 
+                    trade.conditionId || 
+                    ''
+                  ).trim();
+                  
+                  // 计算金额: size * price（优先）或直接使用 amount_usdc
+                  let amount = 0;
+                  if (trade.size && trade.price) {
+                    amount = parseFloat(String(trade.size)) * parseFloat(String(trade.price));
+                  } else {
+                    amount = parseFloat(
+                      trade.amount_usdc || 
+                      trade.amount || 
+                      trade.amountUsdc || 
+                      trade.value || 
+                      '0'
+                    );
+                  }
+                  
+                  // 处理时间戳：可能是秒级时间戳或 ISO 字符串
+                  let timestamp: string;
+                  if (trade.timestamp) {
+                    if (typeof trade.timestamp === 'number') {
+                      // 判断是秒级还是毫秒级时间戳
+                      timestamp = trade.timestamp < 10000000000
+                        ? new Date(trade.timestamp * 1000).toISOString()
+                        : new Date(trade.timestamp).toISOString();
+                    } else {
+                      timestamp = new Date(trade.timestamp).toISOString();
+                    }
+                  } else {
+                    timestamp = new Date(
+                      trade.created_at || 
+                      trade.time || 
+                      trade.createdAt || 
+                      Date.now()
+                    ).toISOString();
+                  }
+                  
+                  // 验证数据有效性
+                  if (!makerAddress || !assetId || amount <= 0 || !timestamp) {
+                    return null;
+                  }
+                  
+                  return {
+                    maker_address: makerAddress,
+                    asset_id: assetId,
+                    amount_usdc: amount,
+                    timestamp: timestamp,
+                    side: (trade.side === 'BUY' || trade.side === 'SELL') ? trade.side : undefined,
+                    title: trade.title || trade.slug || undefined,
+                    conditionId: trade.conditionId || undefined,
+                  };
+                } catch (error) {
+                  console.warn(`[Polymarket API] 解析交易数据失败:`, error);
+                  return null;
+                }
+              })
+              .filter((trade: PolymarketTrade | null): trade is PolymarketTrade => trade !== null);
+            
+            if (processedTrades.length > 0) {
+              return processedTrades;
+            }
+          }
+          
+          // 如果没有数据，记录警告但不抛出错误（可能只是没有新交易）
+          console.warn(`[Polymarket API] Data API 返回空数据或无效数据`);
+          return [];
+        } catch (error: any) {
+          // 详细的错误信息
+          let errorMsg: string;
+          if (error.response) {
+            // HTTP 错误响应
+            errorMsg = `HTTP ${error.response.status}: ${error.response.statusText || error.message}`;
+            if (error.response.data) {
+              const errorData = typeof error.response.data === 'string' 
+                ? error.response.data 
+                : JSON.stringify(error.response.data);
+              errorMsg += ` - ${errorData.substring(0, 100)}`;
+            }
+          } else if (error.code === 'ECONNABORTED') {
+            errorMsg = `请求超时 (${error.message})`;
+          } else if (error.code === 'ENOTFOUND') {
+            errorMsg = `DNS 解析失败 (${error.message})`;
+          } else if (error.code === 'ECONNREFUSED') {
+            errorMsg = `连接被拒绝 (${error.message})`;
+          } else {
+            errorMsg = error.message || String(error);
+          }
+          
+          console.warn(
+            `[Polymarket API] Data API 端点 ${endpoint} 失败 (尝试 ${attempt + 1}/${retries + 1}):`,
+            errorMsg
+          );
+          
+          // 如果是最后一次尝试，继续下一个端点
+          if (attempt === retries) {
+            continue;
+          }
+          // 否则重试当前端点（指数退避）
         }
-      } catch (error: any) {
-        console.warn(`[Polymarket API] Data API 端点 ${endpoint} 失败:`, error.message);
-        continue;
       }
     }
 
-    throw new Error('All Data API endpoints failed');
+    const duration = Date.now() - startTime;
+    throw new Error(
+      `All Data API endpoints failed after ${duration}ms. ` +
+      `Tried ${endpoints.length} endpoint(s) with ${retries + 1} attempt(s) each.`
+    );
   }
 
 
@@ -264,21 +391,22 @@ class PolymarketClient {
 
     console.log(`[Polymarket API] 开始获取最近 ${limit} 条交易...`);
 
-    // 按优先级尝试不同的 API
+    // 按优先级尝试不同的 API（根据官方文档：https://docs.polymarket.com/quickstart/overview）
     const errors: string[] = [];
 
-    // 1. 优先尝试 The Graph（链上数据，最可靠）
+    // 1. 优先尝试 CLOB API（官方推荐，用于获取实时交易数据）
+    // 文档：https://docs.polymarket.com/developers/CLOB/trades/trades
     try {
-      const trades = await this.fetchTradesFromTheGraph(limit);
+      const trades = await this.fetchTradesFromCLOB(limit);
       if (trades && trades.length > 0) {
         return this.processTrades(trades, limit);
       }
     } catch (error: any) {
-      errors.push(`The Graph: ${error.message}`);
-      console.warn(`[Polymarket API] The Graph 失败: ${error.message}`);
+      errors.push(`CLOB API: ${error.message}`);
+      console.warn(`[Polymarket API] CLOB API 失败: ${error.message}`);
     }
 
-    // 2. 尝试 Data API（通常最可靠）
+    // 2. 尝试 Data API（用于交易历史，但可能需要特定用户参数）
     try {
       const trades = await this.fetchTradesFromDataAPI(limit);
       if (trades && trades.length > 0) {
@@ -289,15 +417,15 @@ class PolymarketClient {
       console.warn(`[Polymarket API] Data API 失败: ${error.message}`);
     }
 
-    // 3. 尝试 CLOB API
+    // 3. 尝试 The Graph（链上数据，备选方案）
     try {
-      const trades = await this.fetchTradesFromCLOB(limit);
+      const trades = await this.fetchTradesFromTheGraph(limit);
       if (trades && trades.length > 0) {
         return this.processTrades(trades, limit);
       }
     } catch (error: any) {
-      errors.push(`CLOB API: ${error.message}`);
-      console.warn(`[Polymarket API] CLOB API 失败: ${error.message}`);
+      errors.push(`The Graph: ${error.message}`);
+      console.warn(`[Polymarket API] The Graph 失败: ${error.message}`);
     }
 
     // 所有 API 都失败，抛出详细错误

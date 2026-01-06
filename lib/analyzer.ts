@@ -1,6 +1,6 @@
 import { createPublicClient, http, Address, PublicClient } from 'viem';
 import { polygon } from 'viem/chains';
-import { prisma } from './prisma';
+import { supabase, TABLES } from './supabase';
 
 /**
  * 钱包分析结果
@@ -193,23 +193,28 @@ async function getTransactionCount(client: PublicClient, address: Address): Prom
 async function getMarketParticipationCount(address: string): Promise<number> {
   try {
     // 查询数据库中该钱包参与的不同市场数量
-    const wallet = await prisma.monitoredWallet.findUnique({
-      where: { address: address.toLowerCase() },
-      include: {
-        tradeEvents: {
-          select: {
-            marketId: true,
-          },
-        },
-      },
-    });
+    const { data: wallet, error: walletError } = await supabase
+      .from(TABLES.MONITORED_WALLETS)
+      .select('id')
+      .eq('address', address.toLowerCase())
+      .single();
 
-    if (!wallet || wallet.tradeEvents.length === 0) {
+    if (walletError || !wallet) {
+      return 0;
+    }
+
+    // 获取该钱包的所有交易事件的市场ID
+    const { data: tradeEvents, error: tradesError } = await supabase
+      .from(TABLES.TRADE_EVENTS)
+      .select('marketId')
+      .eq('walletId', wallet.id);
+
+    if (tradesError || !tradeEvents || tradeEvents.length === 0) {
       return 0;
     }
 
     // 统计不同的市场ID
-    const uniqueMarkets = new Set(wallet.tradeEvents.map((event: { marketId: string }) => event.marketId));
+    const uniqueMarkets = new Set(tradeEvents.map((event: { marketId: string }) => event.marketId));
     return uniqueMarkets.size;
   } catch (error) {
     console.error('查询市场参与度失败:', error);

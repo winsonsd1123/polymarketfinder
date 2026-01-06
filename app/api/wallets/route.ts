@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { prisma } from '@/lib/prisma';
+import { supabase, TABLES } from '@/lib/supabase';
 
 /**
  * GET /api/wallets
@@ -7,56 +7,82 @@ import { prisma } from '@/lib/prisma';
  */
 export async function GET() {
   try {
-    const wallets = await prisma.monitoredWallet.findMany({
-      orderBy: {
-        createdAt: 'desc',
-      },
-      include: {
-        tradeEvents: {
-          include: {
-            market: {
-              select: {
-                id: true,
-                title: true,
-              },
-            },
-          },
-          orderBy: {
-            timestamp: 'asc', // 按时间升序
-          },
-        },
-        _count: {
-          select: {
-            tradeEvents: true,
-          },
-        },
-      },
+    // 获取所有钱包，按创建时间倒序
+    const { data: wallets, error: walletsError } = await supabase
+      .from(TABLES.MONITORED_WALLETS)
+      .select('*')
+      .order('createdAt', { ascending: false });
+
+    if (walletsError) {
+      throw walletsError;
+    }
+
+    if (!wallets || wallets.length === 0) {
+      return NextResponse.json({
+        success: true,
+        data: [],
+        count: 0,
+      });
+    }
+
+    // 获取所有钱包的交易事件和市场信息
+    const walletIds = wallets.map(w => w.id);
+    const { data: tradeEvents, error: tradesError } = await supabase
+      .from(TABLES.TRADE_EVENTS)
+      .select(`
+        id,
+        walletId,
+        marketId,
+        amount,
+        isBuy,
+        timestamp,
+        createdAt,
+        markets:marketId (
+          id,
+          title
+        )
+      `)
+      .in('walletId', walletIds)
+      .order('timestamp', { ascending: true });
+
+    if (tradesError) {
+      throw tradesError;
+    }
+
+    // 按钱包分组交易事件
+    const tradesByWallet = new Map<string, any[]>();
+    tradeEvents?.forEach((trade: any) => {
+      if (!tradesByWallet.has(trade.walletId)) {
+        tradesByWallet.set(trade.walletId, []);
+      }
+      tradesByWallet.get(trade.walletId)!.push(trade);
     });
 
     // 格式化数据
-    type WalletType = typeof wallets[0];
-    type TradeEventType = WalletType['tradeEvents'][0];
-    const formattedWallets = wallets.map((wallet: WalletType) => {
-      const firstTrade = wallet.tradeEvents.length > 0 ? wallet.tradeEvents[0] : null;
-      const allMarkets = wallet.tradeEvents.map((te: TradeEventType) => te.market);
-
+    const formattedWallets = wallets.map((wallet) => {
+      const walletTrades = tradesByWallet.get(wallet.id) || [];
+      const firstTrade = walletTrades.length > 0 ? walletTrades[0] : null;
+      
       // 获取所有关联的市场（去重）
-      type MarketType = TradeEventType['market'];
-      const uniqueMarkets = Array.from(
-        new Map(allMarkets.map((m: MarketType) => [m.id, m])).values()
-      );
+      const marketsMap = new Map();
+      walletTrades.forEach((trade: any) => {
+        if (trade.markets && !marketsMap.has(trade.markets.id)) {
+          marketsMap.set(trade.markets.id, trade.markets);
+        }
+      });
+      const uniqueMarkets = Array.from(marketsMap.values());
 
       return {
         id: wallet.id,
         address: wallet.address,
         riskScore: wallet.riskScore,
         fundingSource: wallet.fundingSource,
-        createdAt: wallet.createdAt.toISOString(),
-        lastActiveAt: wallet.lastActiveAt?.toISOString() || null,
-        updatedAt: wallet.updatedAt.toISOString(),
-        firstTradeTime: firstTrade?.timestamp.toISOString() || null,
+        createdAt: wallet.createdAt,
+        lastActiveAt: wallet.lastActiveAt || null,
+        updatedAt: wallet.updatedAt,
+        firstTradeTime: firstTrade?.timestamp || null,
         markets: uniqueMarkets,
-        tradeCount: wallet._count.tradeEvents,
+        tradeCount: walletTrades.length,
       };
     });
 

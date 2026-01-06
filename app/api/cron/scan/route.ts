@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import pLimit from 'p-limit';
 import { fetchRecentTrades, type PolymarketTrade } from '@/lib/polymarket';
 import { analyzeWallet, type WalletAnalysisResult } from '@/lib/analyzer';
-import { prisma } from '@/lib/prisma';
+import { supabase, TABLES } from '@/lib/supabase';
 
 /**
  * 扫描结果统计
@@ -32,16 +32,18 @@ async function processWallet(
     const normalizedAddress = address.toLowerCase();
 
     // 检查钱包是否已存在
-    const existingWallet = await prisma.monitoredWallet.findUnique({
-      where: { address: normalizedAddress },
-    });
+    const { data: existingWallet, error: findError } = await supabase
+      .from(TABLES.MONITORED_WALLETS)
+      .select('id, lastActiveAt')
+      .eq('address', normalizedAddress)
+      .single();
 
-    if (existingWallet) {
+    if (existingWallet && !findError) {
       // 更新最后活跃时间
-      await prisma.monitoredWallet.update({
-        where: { id: existingWallet.id },
-        data: { lastActiveAt: new Date() },
-      });
+      await supabase
+        .from(TABLES.MONITORED_WALLETS)
+        .update({ lastActiveAt: new Date().toISOString() })
+        .eq('id', existingWallet.id);
       return { success: true, isNew: false, isSuspicious: false };
     }
 
@@ -57,53 +59,70 @@ async function processWallet(
     if (analysis.isSuspicious && analysis.score >= 50) {
       // 确保市场存在（使用 asset_id 作为 market id）
       const marketId = trade.asset_id;
-      let market = await prisma.market.findUnique({
-        where: { id: marketId },
-      });
+      
+      // 检查市场是否存在
+      const { data: existingMarket } = await supabase
+        .from(TABLES.MARKETS)
+        .select('id, volume')
+        .eq('id', marketId)
+        .single();
 
-      if (!market) {
+      if (!existingMarket) {
         // 创建新市场（使用 API 返回的标题，如果没有则使用 ID）
         const marketTitle = (trade as any).title || `Market ${marketId.substring(0, 20)}...`;
-        market = await prisma.market.create({
-          data: {
+        const { error: marketError } = await supabase
+          .from(TABLES.MARKETS)
+          .insert({
             id: marketId,
             title: marketTitle,
             volume: trade.amount_usdc,
-          },
-        });
+          });
+        
+        if (marketError) {
+          console.error('创建市场失败:', marketError);
+        }
       } else {
         // 更新市场交易量
-        await prisma.market.update({
-          where: { id: marketId },
-          data: {
-            volume: market.volume + trade.amount_usdc,
-          },
-        });
+        await supabase
+          .from(TABLES.MARKETS)
+          .update({ volume: existingMarket.volume + trade.amount_usdc })
+          .eq('id', marketId);
       }
 
       // 创建监控钱包
-      const wallet = await prisma.monitoredWallet.create({
-        data: {
+      const { data: wallet, error: walletError } = await supabase
+        .from(TABLES.MONITORED_WALLETS)
+        .insert({
           address: normalizedAddress,
           riskScore: analysis.score,
           fundingSource: analysis.checks.fundingSource?.sourceAddress || null,
-          lastActiveAt: new Date(),
-        },
-      });
+          lastActiveAt: new Date().toISOString(),
+        })
+        .select()
+        .single();
+
+      if (walletError || !wallet) {
+        console.error('创建钱包失败:', walletError);
+        return { success: false, isNew: true, isSuspicious: true, error: walletError?.message };
+      }
 
       // 从交易数据中获取方向（Data API 返回 side 字段：BUY 或 SELL）
       const isBuy = (trade as any).side === 'BUY' || (trade as any).side !== 'SELL';
 
       // 创建交易事件
-      await prisma.tradeEvent.create({
-        data: {
-          marketId: market.id,
+      const { error: tradeError } = await supabase
+        .from(TABLES.TRADE_EVENTS)
+        .insert({
+          marketId: marketId,
           walletId: wallet.id,
           amount: trade.amount_usdc,
           isBuy: isBuy,
-          timestamp: new Date(trade.timestamp),
-        },
-      });
+          timestamp: new Date(trade.timestamp).toISOString(),
+        });
+
+      if (tradeError) {
+        console.error('创建交易事件失败:', tradeError);
+      }
 
       return { success: true, isNew: true, isSuspicious: true };
     }

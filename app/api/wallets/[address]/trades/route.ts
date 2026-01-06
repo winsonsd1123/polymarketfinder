@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { prisma } from '@/lib/prisma';
+import { supabase, TABLES } from '@/lib/supabase';
 
 /**
  * GET /api/wallets/[address]/trades
@@ -14,21 +14,13 @@ export async function GET(
     const address = addressParam.toLowerCase();
 
     // 查找钱包
-    const wallet = await prisma.monitoredWallet.findUnique({
-      where: { address },
-      include: {
-        tradeEvents: {
-          include: {
-            market: true,
-          },
-          orderBy: {
-            timestamp: 'desc', // 最新的交易在前
-          },
-        },
-      },
-    });
+    const { data: wallet, error: walletError } = await supabase
+      .from(TABLES.MONITORED_WALLETS)
+      .select('*')
+      .eq('address', address)
+      .single();
 
-    if (!wallet) {
+    if (walletError || !wallet) {
       return NextResponse.json(
         {
           success: false,
@@ -38,38 +30,56 @@ export async function GET(
       );
     }
 
+    // 获取该钱包的所有交易事件
+    const { data: tradeEvents, error: tradesError } = await supabase
+      .from(TABLES.TRADE_EVENTS)
+      .select(`
+        *,
+        markets:marketId (
+          id,
+          title,
+          volume
+        )
+      `)
+      .eq('walletId', wallet.id)
+      .order('timestamp', { ascending: false });
+
+    if (tradesError) {
+      throw tradesError;
+    }
+
     // 格式化交易数据
-    const trades = wallet.tradeEvents.map((trade) => ({
+    const trades = (tradeEvents || []).map((trade: any) => ({
       id: trade.id,
       marketId: trade.marketId,
-      marketTitle: trade.market.title,
+      marketTitle: trade.markets?.title || 'Unknown Market',
       amount: trade.amount,
       amountUsdc: trade.amount,
       isBuy: trade.isBuy,
       direction: trade.isBuy ? '买入' : '卖出',
-      timestamp: trade.timestamp.toISOString(),
-      createdAt: trade.createdAt.toISOString(),
+      timestamp: trade.timestamp,
+      createdAt: trade.createdAt,
     }));
 
     // 统计信息
+    const marketsMap = new Map();
+    (tradeEvents || []).forEach((trade: any) => {
+      if (trade.markets && !marketsMap.has(trade.markets.id)) {
+        marketsMap.set(trade.markets.id, {
+          id: trade.markets.id,
+          title: trade.markets.title,
+          volume: trade.markets.volume,
+        });
+      }
+    });
+
     const stats = {
       totalTrades: trades.length,
       totalAmount: trades.reduce((sum, t) => sum + t.amount, 0),
       buyCount: trades.filter((t) => t.isBuy).length,
       sellCount: trades.filter((t) => !t.isBuy).length,
-      uniqueMarkets: new Set(trades.map((t) => t.marketId)).size,
-      markets: Array.from(
-        new Map(
-          wallet.tradeEvents.map((te) => [
-            te.market.id,
-            {
-              id: te.market.id,
-              title: te.market.title,
-              volume: te.market.volume,
-            },
-          ])
-        ).values()
-      ),
+      uniqueMarkets: marketsMap.size,
+      markets: Array.from(marketsMap.values()),
     };
 
     return NextResponse.json({
@@ -78,8 +88,8 @@ export async function GET(
         address: wallet.address,
         riskScore: wallet.riskScore,
         fundingSource: wallet.fundingSource,
-        createdAt: wallet.createdAt.toISOString(),
-        lastActiveAt: wallet.lastActiveAt?.toISOString() || null,
+        createdAt: wallet.createdAt,
+        lastActiveAt: wallet.lastActiveAt || null,
       },
       trades,
       stats,
