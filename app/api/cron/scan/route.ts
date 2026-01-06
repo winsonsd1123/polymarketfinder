@@ -182,9 +182,9 @@ export async function GET(request: NextRequest) {
   try {
     // 获取查询参数
     const searchParams = request.nextUrl.searchParams;
-    const limit = parseInt(searchParams.get('limit') || '50', 10);
+    const limit = parseInt(searchParams.get('limit') || '500', 10); // 默认从 50 增加到 200
     const useMockData = searchParams.get('mock') === 'true';
-    const concurrency = parseInt(searchParams.get('concurrency') || '3', 10);
+    const concurrency = parseInt(searchParams.get('concurrency') || '5', 10); // 默认并发从 3 增加到 5
 
     console.log(`🚀 开始扫描交易 (limit: ${limit}, mock: ${useMockData}, concurrency: ${concurrency})`);
 

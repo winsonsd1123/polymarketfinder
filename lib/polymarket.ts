@@ -382,7 +382,7 @@ class PolymarketClient {
    * @param useMockData 是否使用模拟数据（用于测试），默认 false
    * @returns 交易列表
    */
-  async fetchRecentTrades(limit: number = 50, useMockData: boolean = false): Promise<PolymarketTrade[]> {
+  async fetchRecentTrades(limit: number = 200, useMockData: boolean = false): Promise<PolymarketTrade[]> {
     // 如果启用模拟数据，直接返回
     if (useMockData) {
       console.log('⚠️  [Polymarket API] 使用模拟数据模式');
@@ -495,7 +495,7 @@ const polymarketClient = new PolymarketClient();
  * @param useMockData 是否使用模拟数据（用于测试），默认 false
  * @returns 交易列表
  */
-export async function fetchRecentTrades(limit: number = 50, useMockData: boolean = false): Promise<PolymarketTrade[]> {
+export async function fetchRecentTrades(limit: number = 200, useMockData: boolean = false): Promise<PolymarketTrade[]> {
   return polymarketClient.fetchRecentTrades(limit, useMockData);
 }
 
