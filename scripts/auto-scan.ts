@@ -6,7 +6,8 @@
  * 使用方法：
  * 1. 直接运行：npm run auto-scan
  * 2. 设置为 cron job（每5分钟运行一次）：
- *    */5 * * * * cd /path/to/project && npm run auto-scan
+ *    在 crontab 中添加：每5分钟 * * * * cd /path/to/project && npm run auto-scan
+ *    或者使用：0,5,10,15,20,25,30,35,40,45,50,55 * * * * cd /path/to/project && npm run auto-scan
  */
 
 import 'dotenv/config';
