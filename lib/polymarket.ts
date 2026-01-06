@@ -226,8 +226,8 @@ class PolymarketClient {
               `(耗时: ${duration}ms, 端点: ${endpoint})`
             );
             
-            const processedTrades = trades
-              .map((trade: any) => {
+            const processedTrades: PolymarketTrade[] = trades
+              .map((trade: any): PolymarketTrade | null => {
                 try {
                   // Data API 格式: proxyWallet, asset, size, price, timestamp
                   const makerAddress = (
@@ -302,7 +302,7 @@ class PolymarketClient {
                   return null;
                 }
               })
-              .filter((trade: PolymarketTrade | null): trade is PolymarketTrade => trade !== null);
+              .filter((trade): trade is PolymarketTrade => trade !== null);
             
             if (processedTrades.length > 0) {
               return processedTrades;
