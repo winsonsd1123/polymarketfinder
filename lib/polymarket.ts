@@ -198,7 +198,7 @@ class PolymarketClient {
           
           const response = await axios.get(endpoint, {
             params: {
-              limit: Math.min(limit, 500), // Data API 可能有限制，最大 500
+              limit: Math.min(limit, 1000), // 增加到 1000，如果 API 支持
               offset: 0,
             },
             timeout: 30000,
@@ -377,6 +377,169 @@ class PolymarketClient {
   }
 
   /**
+   * 批量获取交易（支持分页获取更多数据）
+   */
+  async fetchRecentTradesBatch(
+    totalLimit: number,
+    batchSize: number = 500,
+    useMockData: boolean = false
+  ): Promise<PolymarketTrade[]> {
+    if (useMockData) {
+      console.log('⚠️  [Polymarket API] 使用模拟数据模式');
+      return this.generateMockTrades(totalLimit);
+    }
+
+    console.log(`[Polymarket API] 开始批量获取 ${totalLimit} 条交易（每批 ${batchSize} 条）...`);
+
+    const allTrades: PolymarketTrade[] = [];
+    const processedKeys = new Set<string>();
+    let offset = 0;
+    const maxBatches = Math.ceil(totalLimit / batchSize);
+
+    for (let batch = 0; batch < maxBatches && allTrades.length < totalLimit; batch++) {
+      const currentBatchSize = Math.min(batchSize, totalLimit - allTrades.length);
+      console.log(`[Polymarket API] 获取第 ${batch + 1}/${maxBatches} 批（offset: ${offset}, limit: ${currentBatchSize}）...`);
+
+      try {
+        // 尝试 Data API（支持 offset）
+        const batchTrades = await this.fetchTradesFromDataAPIWithOffset(currentBatchSize, offset);
+        if (batchTrades && batchTrades.length > 0) {
+          // 去重处理
+          const beforeCount = allTrades.length;
+          for (const trade of batchTrades) {
+            const key = getTradeKey(trade);
+            if (!processedKeys.has(key)) {
+              processedKeys.add(key);
+              allTrades.push(trade);
+            }
+          }
+          const addedCount = allTrades.length - beforeCount;
+          console.log(`[Polymarket API] 第 ${batch + 1} 批获取到 ${batchTrades.length} 条交易，去重后新增 ${addedCount} 条，累计 ${allTrades.length} 条`);
+          
+          // 如果返回的数据少于请求的数量，说明已经到底了
+          if (batchTrades.length < currentBatchSize) {
+            console.log(`[Polymarket API] 已获取所有可用交易（返回 ${batchTrades.length} < 请求 ${currentBatchSize}）`);
+            break;
+          }
+          
+          offset += batchTrades.length;
+          // 添加延迟避免 API 限流
+          if (batch < maxBatches - 1) {
+            await new Promise(resolve => setTimeout(resolve, 500));
+          }
+        } else {
+          console.warn(`[Polymarket API] 第 ${batch + 1} 批未获取到数据`);
+          break;
+        }
+      } catch (error: any) {
+        console.warn(`[Polymarket API] 第 ${batch + 1} 批获取失败: ${error.message}`);
+        // 如果批量获取失败，尝试单次获取
+        if (batch === 0) {
+          return await this.fetchRecentTrades(totalLimit, useMockData);
+        }
+        break;
+      }
+    }
+
+    console.log(`[Polymarket API] ✅ 批量获取完成，共获取 ${allTrades.length} 条交易`);
+    return allTrades.slice(0, totalLimit);
+  }
+
+  /**
+   * 使用 offset 从 Data API 获取交易
+   */
+  private async fetchTradesFromDataAPIWithOffset(limit: number, offset: number): Promise<PolymarketTrade[]> {
+    const endpoints = [
+      'https://data-api.polymarket.com/trades',
+      'https://api.polymarket.com/trades',
+    ];
+
+    for (const endpoint of endpoints) {
+      try {
+        const response = await axios.get(endpoint, {
+          params: {
+            limit: Math.min(limit, 1000),
+            offset: offset,
+          },
+          timeout: 30000,
+          headers: {
+            'Accept': 'application/json',
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+          },
+        });
+
+        if (response.status >= 400) {
+          throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+
+        const trades = Array.isArray(response.data) 
+          ? response.data 
+          : (response.data?.trades || response.data?.data || []);
+        
+        if (Array.isArray(trades) && trades.length > 0) {
+          const processedTrades: PolymarketTrade[] = trades.map((trade: any): PolymarketTrade | null => {
+            const makerAddress = (
+              trade.proxyWallet || 
+              trade.maker_address || 
+              trade.maker || 
+              ''
+            ).toLowerCase().trim();
+            
+            const assetId = (
+              trade.asset || 
+              trade.asset_id || 
+              trade.assetId || 
+              ''
+            ).trim();
+            
+            let amount = 0;
+            if (trade.size && trade.price) {
+              amount = parseFloat(String(trade.size)) * parseFloat(String(trade.price));
+            } else {
+              amount = parseFloat(trade.amount_usdc || trade.amount || '0');
+            }
+            
+            let timestamp: string;
+            if (trade.timestamp) {
+              if (typeof trade.timestamp === 'number') {
+                timestamp = trade.timestamp < 10000000000
+                  ? new Date(trade.timestamp * 1000).toISOString()
+                  : new Date(trade.timestamp).toISOString();
+              } else {
+                timestamp = new Date(trade.timestamp).toISOString();
+              }
+            } else {
+              timestamp = new Date(trade.created_at || Date.now()).toISOString();
+            }
+            
+            if (!makerAddress || !assetId || amount <= 0 || !timestamp) {
+              return null;
+            }
+            
+            return {
+              maker_address: makerAddress,
+              asset_id: assetId,
+              amount_usdc: amount,
+              timestamp: timestamp,
+              side: (trade.side === 'BUY' || trade.side === 'SELL') ? trade.side : undefined,
+              title: trade.title || trade.slug || undefined,
+              conditionId: trade.conditionId || undefined,
+            };
+          }).filter((trade): trade is PolymarketTrade => trade !== null);
+          
+          return processedTrades;
+        }
+        
+        return [];
+      } catch (error) {
+        continue;
+      }
+    }
+    
+    return [];
+  }
+
+  /**
    * 获取最近的交易数据
    * @param limit 获取的交易数量，默认 50
    * @param useMockData 是否使用模拟数据（用于测试），默认 false
@@ -497,6 +660,20 @@ const polymarketClient = new PolymarketClient();
  */
 export async function fetchRecentTrades(limit: number = 200, useMockData: boolean = false): Promise<PolymarketTrade[]> {
   return polymarketClient.fetchRecentTrades(limit, useMockData);
+}
+
+/**
+ * 批量获取交易（支持分页获取更多数据）
+ * @param totalLimit 总共要获取的交易数
+ * @param batchSize 每批获取的数量（默认 500）
+ * @param useMockData 是否使用模拟数据
+ */
+export async function fetchRecentTradesBatch(
+  totalLimit: number,
+  batchSize: number = 500,
+  useMockData: boolean = false
+): Promise<PolymarketTrade[]> {
+  return polymarketClient.fetchRecentTradesBatch(totalLimit, batchSize, useMockData);
 }
 
 /**

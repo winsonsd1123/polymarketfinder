@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import pLimit from 'p-limit';
-import { fetchRecentTrades, type PolymarketTrade } from '@/lib/polymarket';
+import { fetchRecentTrades, fetchRecentTradesBatch, type PolymarketTrade } from '@/lib/polymarket';
 import { analyzeWallet, type WalletAnalysisResult } from '@/lib/analyzer';
 import { supabase, TABLES } from '@/lib/supabase';
 
@@ -202,14 +202,17 @@ export async function GET(request: NextRequest) {
   try {
     // 获取查询参数
     const searchParams = request.nextUrl.searchParams;
-    const limit = parseInt(searchParams.get('limit') || '500', 10); // 默认从 50 增加到 200
+    const limit = parseInt(searchParams.get('limit') || '5000', 10); // 默认增加到 5000
     const useMockData = searchParams.get('mock') === 'true';
-    const concurrency = parseInt(searchParams.get('concurrency') || '5', 10); // 默认并发从 3 增加到 5
+    const concurrency = parseInt(searchParams.get('concurrency') || '5', 10);
+    const useBatch = searchParams.get('batch') !== 'false'; // 默认使用批量获取
 
-    console.log(`🚀 开始扫描交易 (limit: ${limit}, mock: ${useMockData}, concurrency: ${concurrency})`);
+    console.log(`🚀 开始扫描交易 (limit: ${limit}, batch: ${useBatch}, mock: ${useMockData}, concurrency: ${concurrency})`);
 
-    // 1. 获取最近的交易
-    const trades = await fetchRecentTrades(limit, useMockData);
+    // 1. 获取最近的交易（如果 limit > 1000，使用批量获取）
+    const trades = limit > 1000 || useBatch
+      ? await fetchRecentTradesBatch(limit, 500, useMockData)
+      : await fetchRecentTrades(limit, useMockData);
     result.totalTrades = trades.length;
 
     if (trades.length === 0) {
