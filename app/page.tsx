@@ -237,9 +237,17 @@ export default function Home() {
             )}
           </p>
         </div>
-        <Button onClick={handleRefresh} disabled={refreshing}>
-          {refreshing ? '扫描中...' : '刷新'}
-        </Button>
+        <div className="flex gap-2">
+          <Button
+            variant={showHistory ? "default" : "outline"}
+            onClick={() => setShowHistory(!showHistory)}
+          >
+            {showHistory ? '隐藏分析历史' : '查看分析历史'}
+          </Button>
+          <Button onClick={handleRefresh} disabled={refreshing}>
+            {refreshing ? '扫描中...' : '刷新'}
+          </Button>
+        </div>
       </div>
 
       {/* 扫描统计信息 */}
