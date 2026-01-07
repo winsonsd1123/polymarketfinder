@@ -19,7 +19,7 @@ import {
 } from '@/lib/formatters';
 
 interface Wallet {
-  id: string;
+  id: number; // bigint
   address: string;
   riskScore: number;
   fundingSource: string | null;
@@ -31,7 +31,7 @@ interface Wallet {
 }
 
 interface Trade {
-  id: string;
+  id: number; // bigint
   marketId: string;
   marketTitle: string;
   amount: number;
@@ -43,7 +43,7 @@ interface Trade {
 }
 
 interface ScanLog {
-  id: string;
+  id: number; // bigint
   startedAt: string;
   completedAt: string | null;
   durationMs: number | null;
@@ -58,6 +58,29 @@ interface ScanLog {
   createdAt: string;
 }
 
+interface AnalysisHistory {
+  id: number; // bigint
+  walletAddress: string;
+  totalScore: number;
+  isSuspicious: boolean;
+  analysisDetails: string | null;
+  walletAgeScore: number;
+  walletAgeHours: number | null;
+  transactionCountScore: number;
+  transactionCountNonce: number | null;
+  marketParticipationScore: number;
+  marketParticipationCount: number;
+  transactionAmountScore: number;
+  transactionAmount: number | null;
+  wcTxGapScore: number;
+  wcTxGapPercentage: number | null;
+  transactionRecencyScore: number;
+  transactionRecencyHours: number | null;
+  fundingSource: string | null;
+  analyzedAt: string;
+  createdAt: string;
+}
+
 export default function Home() {
   const [wallets, setWallets] = useState<Wallet[]>([]);
   const [loading, setLoading] = useState(true);
@@ -68,6 +91,10 @@ export default function Home() {
   const [loadingTrades, setLoadingTrades] = useState(false);
   const [scanLogs, setScanLogs] = useState<ScanLog[]>([]);
   const [loadingScanLogs, setLoadingScanLogs] = useState(false);
+  const [analysisHistory, setAnalysisHistory] = useState<AnalysisHistory[]>([]);
+  const [loadingHistory, setLoadingHistory] = useState(false);
+  const [historySearchAddress, setHistorySearchAddress] = useState('');
+  const [showHistory, setShowHistory] = useState(false);
 
   // 获取钱包列表
   const fetchWallets = async () => {
@@ -97,6 +124,34 @@ export default function Home() {
       console.error('获取扫描日志失败:', error);
     } finally {
       setLoadingScanLogs(false);
+    }
+  };
+
+  // 获取分析历史
+  const fetchAnalysisHistory = async (address?: string) => {
+    setLoadingHistory(true);
+    try {
+      const url = address 
+        ? `/api/analysis-history?address=${encodeURIComponent(address)}&limit=100`
+        : '/api/analysis-history?limit=100';
+      const response = await fetch(url);
+      const data = await response.json();
+      if (data.success) {
+        setAnalysisHistory(data.data);
+      }
+    } catch (error) {
+      console.error('获取分析历史失败:', error);
+    } finally {
+      setLoadingHistory(false);
+    }
+  };
+
+  // 搜索分析历史
+  const handleSearchHistory = () => {
+    if (historySearchAddress.trim()) {
+      fetchAnalysisHistory(historySearchAddress.trim());
+    } else {
+      fetchAnalysisHistory();
     }
   };
 
@@ -152,7 +207,10 @@ export default function Home() {
   useEffect(() => {
     fetchWallets();
     fetchScanLogs();
-  }, []);
+    if (showHistory) {
+      fetchAnalysisHistory();
+    }
+  }, [showHistory]);
 
   if (loading) {
     return (
@@ -255,6 +313,141 @@ export default function Home() {
         </div>
       )}
 
+      {/* 分析历史记录 */}
+      {showHistory && (
+        <div className="mb-6 rounded-lg border bg-card p-4">
+          <div className="mb-4 flex items-center justify-between">
+            <h2 className="text-lg font-semibold">钱包分析历史</h2>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                placeholder="输入钱包地址搜索..."
+                value={historySearchAddress}
+                onChange={(e) => setHistorySearchAddress(e.target.value)}
+                onKeyPress={(e) => e.key === 'Enter' && handleSearchHistory()}
+                className="rounded border px-3 py-1 text-sm"
+              />
+              <Button onClick={handleSearchHistory} size="sm" disabled={loadingHistory}>
+                {loadingHistory ? '查询中...' : '搜索'}
+              </Button>
+            </div>
+          </div>
+          
+          {loadingHistory ? (
+            <div className="py-8 text-center text-muted-foreground">加载中...</div>
+          ) : analysisHistory.length === 0 ? (
+            <div className="py-8 text-center text-muted-foreground">暂无分析历史</div>
+          ) : (
+            <div className="space-y-3">
+              {analysisHistory.map((history) => (
+                <div
+                  key={history.id}
+                  className="rounded border p-4 hover:bg-muted/50"
+                >
+                  <div className="mb-2 flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono text-sm">{formatAddress(history.walletAddress)}</span>
+                      <button
+                        onClick={() => handleCopyAddress(history.walletAddress)}
+                        className="text-xs text-muted-foreground hover:text-foreground"
+                      >
+                        复制
+                      </button>
+                      {history.isSuspicious && (
+                        <span className="rounded bg-red-100 px-2 py-0.5 text-xs text-red-600">
+                          可疑
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-right">
+                      <div className={`text-lg font-bold ${getRiskScoreColor(history.totalScore)}`}>
+                        {history.totalScore} 分
+                      </div>
+                      <div className="text-xs text-muted-foreground">
+                        {formatRelativeTime(history.analyzedAt)}
+                      </div>
+                    </div>
+                  </div>
+                  
+                  <div className="mt-3 grid grid-cols-2 gap-2 text-sm md:grid-cols-4">
+                    {history.walletAgeScore > 0 && (
+                      <div>
+                        <span className="text-muted-foreground">钱包年龄: </span>
+                        <span className="font-medium">{history.walletAgeScore} 分</span>
+                        {history.walletAgeHours !== null && (
+                          <span className="ml-1 text-xs text-muted-foreground">
+                            ({history.walletAgeHours.toFixed(1)}h)
+                          </span>
+                        )}
+                      </div>
+                    )}
+                    {history.transactionCountScore > 0 && (
+                      <div>
+                        <span className="text-muted-foreground">交易次数: </span>
+                        <span className="font-medium">{history.transactionCountScore} 分</span>
+                        {history.transactionCountNonce !== null && (
+                          <span className="ml-1 text-xs text-muted-foreground">
+                            (nonce: {history.transactionCountNonce})
+                          </span>
+                        )}
+                      </div>
+                    )}
+                    {history.marketParticipationScore > 0 && (
+                      <div>
+                        <span className="text-muted-foreground">市场参与: </span>
+                        <span className="font-medium">{history.marketParticipationScore} 分</span>
+                        <span className="ml-1 text-xs text-muted-foreground">
+                          ({history.marketParticipationCount} 个)
+                        </span>
+                      </div>
+                    )}
+                    {history.transactionAmountScore > 0 && (
+                      <div>
+                        <span className="text-muted-foreground">交易规模: </span>
+                        <span className="font-medium">{history.transactionAmountScore} 分</span>
+                        {history.transactionAmount !== null && (
+                          <span className="ml-1 text-xs text-muted-foreground">
+                            (${history.transactionAmount.toFixed(2)})
+                          </span>
+                        )}
+                      </div>
+                    )}
+                    {history.wcTxGapScore > 0 && (
+                      <div>
+                        <span className="text-muted-foreground">WC/TX: </span>
+                        <span className="font-medium">{history.wcTxGapScore} 分</span>
+                        {history.wcTxGapPercentage !== null && (
+                          <span className="ml-1 text-xs text-muted-foreground">
+                            ({history.wcTxGapPercentage.toFixed(1)}%)
+                          </span>
+                        )}
+                      </div>
+                    )}
+                    {history.transactionRecencyScore > 0 && (
+                      <div>
+                        <span className="text-muted-foreground">交易时间: </span>
+                        <span className="font-medium">{history.transactionRecencyScore} 分</span>
+                        {history.transactionRecencyHours !== null && (
+                          <span className="ml-1 text-xs text-muted-foreground">
+                            ({history.transactionRecencyHours.toFixed(1)}h前)
+                          </span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  
+                  {history.analysisDetails && (
+                    <div className="mt-2 text-xs text-muted-foreground">
+                      {history.analysisDetails}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       {wallets.length === 0 ? (
         <div className="rounded-lg border p-8 text-center">
           <p className="text-muted-foreground">暂无监控钱包</p>
@@ -350,17 +543,18 @@ export default function Home() {
 
       {/* 钱包详情弹窗 */}
       {selectedWallet && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
-          <div className="max-h-[90vh] w-full max-w-4xl overflow-y-auto rounded-lg border bg-background p-6">
-            <div className="mb-4 flex items-center justify-between">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
+          <div className="max-h-[90vh] w-full max-w-5xl overflow-y-auto rounded-xl border-2 border-gray-300 bg-white shadow-2xl p-8">
+            <div className="mb-6 flex items-center justify-between border-b-2 border-gray-200 pb-4">
               <div>
-                <h2 className="text-2xl font-bold">钱包详情</h2>
-                <p className="mt-1 font-mono text-sm text-muted-foreground">
+                <h2 className="text-3xl font-bold text-gray-900">钱包详情</h2>
+                <p className="mt-2 font-mono text-base text-gray-600 break-all">
                   {selectedWallet.address}
                 </p>
               </div>
               <Button
                 variant="outline"
+                className="border-2 border-gray-300 hover:bg-gray-100"
                 onClick={() => {
                   setSelectedWallet(null);
                   setWalletTrades([]);
@@ -370,71 +564,71 @@ export default function Home() {
               </Button>
             </div>
 
-            <div className="mb-6 grid grid-cols-2 gap-4 rounded-lg border p-4">
-              <div>
-                <p className="text-sm text-muted-foreground">风险评分</p>
-                <p className={`text-2xl font-bold ${getRiskScoreColor(selectedWallet.riskScore)}`}>
+            <div className="mb-8 grid grid-cols-2 gap-6 rounded-xl border-2 border-gray-200 bg-gray-50 p-6">
+              <div className="bg-white rounded-lg p-4 border border-gray-200">
+                <p className="text-sm font-medium text-gray-500 mb-2">风险评分</p>
+                <p className={`text-4xl font-bold ${getRiskScoreColor(selectedWallet.riskScore)}`}>
                   {selectedWallet.riskScore.toFixed(1)}
                 </p>
               </div>
-              <div>
-                <p className="text-sm text-muted-foreground">交易总数</p>
-                <p className="text-2xl font-bold">{selectedWallet.tradeCount}</p>
+              <div className="bg-white rounded-lg p-4 border border-gray-200">
+                <p className="text-sm font-medium text-gray-500 mb-2">交易总数</p>
+                <p className="text-4xl font-bold text-gray-900">{selectedWallet.tradeCount}</p>
               </div>
-              <div>
-                <p className="text-sm text-muted-foreground">发现时间</p>
-                <p className="text-lg">{formatRelativeTime(selectedWallet.createdAt)}</p>
+              <div className="bg-white rounded-lg p-4 border border-gray-200">
+                <p className="text-sm font-medium text-gray-500 mb-2">发现时间</p>
+                <p className="text-xl font-semibold text-gray-900">{formatRelativeTime(selectedWallet.createdAt)}</p>
               </div>
-              <div>
-                <p className="text-sm text-muted-foreground">参与市场数</p>
-                <p className="text-lg">{selectedWallet.markets.length}</p>
+              <div className="bg-white rounded-lg p-4 border border-gray-200">
+                <p className="text-sm font-medium text-gray-500 mb-2">参与市场数</p>
+                <p className="text-xl font-semibold text-gray-900">{selectedWallet.markets.length}</p>
               </div>
             </div>
 
             <div>
-              <h3 className="mb-4 text-xl font-semibold">下注记录</h3>
+              <h3 className="mb-4 text-2xl font-bold text-gray-900 border-b-2 border-gray-200 pb-2">下注记录</h3>
               {loadingTrades ? (
-                <div className="py-8 text-center">加载中...</div>
+                <div className="py-12 text-center text-lg text-gray-600">加载中...</div>
               ) : walletTrades.length === 0 ? (
-                <div className="py-8 text-center text-muted-foreground">暂无交易记录</div>
+                <div className="py-12 text-center text-lg text-gray-500">暂无交易记录</div>
               ) : (
-                <div className="rounded-lg border">
+                <div className="rounded-xl border-2 border-gray-200 bg-white overflow-hidden">
                   <Table>
                     <TableHeader>
-                      <TableRow>
-                        <TableHead>时间</TableHead>
-                        <TableHead>市场</TableHead>
-                        <TableHead>方向</TableHead>
-                        <TableHead>金额 (USDC)</TableHead>
+                      <TableRow className="bg-gray-100">
+                        <TableHead className="font-bold text-gray-900 text-base">时间</TableHead>
+                        <TableHead className="font-bold text-gray-900 text-base">市场</TableHead>
+                        <TableHead className="font-bold text-gray-900 text-base">方向</TableHead>
+                        <TableHead className="font-bold text-gray-900 text-base">金额 (USDC)</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
                       {walletTrades.map((trade) => (
-                        <TableRow key={trade.id}>
-                          <TableCell className="text-muted-foreground">
+                        <TableRow key={trade.id} className="hover:bg-gray-50">
+                          <TableCell className="text-base font-medium text-gray-700">
                             {formatRelativeTime(trade.timestamp)}
                           </TableCell>
                           <TableCell>
-                            <div className="max-w-md">
-                              <p className="text-sm" title={trade.marketTitle}>
-                                {trade.marketTitle.length > 50
-                                  ? `${trade.marketTitle.slice(0, 50)}...`
+                            <div className="max-w-lg">
+                              <p className="text-base text-gray-900 font-medium" title={trade.marketTitle}>
+                                {trade.marketTitle.length > 60
+                                  ? `${trade.marketTitle.slice(0, 60)}...`
                                   : trade.marketTitle}
                               </p>
                             </div>
                           </TableCell>
                           <TableCell>
                             <span
-                              className={
+                              className={`text-base font-bold px-3 py-1 rounded ${
                                 trade.isBuy
-                                  ? 'text-green-600 font-semibold'
-                                  : 'text-red-600 font-semibold'
-                              }
+                                  ? 'text-green-700 bg-green-100'
+                                  : 'text-red-700 bg-red-100'
+                              }`}
                             >
                               {trade.direction}
                             </span>
                           </TableCell>
-                          <TableCell className="font-mono">
+                          <TableCell className="font-mono text-base font-semibold text-gray-900">
                             ${trade.amountUsdc.toFixed(2)}
                           </TableCell>
                         </TableRow>

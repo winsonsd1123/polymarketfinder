@@ -39,13 +39,14 @@ export const TABLES = {
   TRADE_EVENTS: 'trade_events',
   MARKETS: 'markets',
   SCAN_LOGS: 'scan_logs',
+  WALLET_ANALYSIS_HISTORY: 'wallet_analysis_history',
 } as const;
 
 /**
  * 类型定义（基于数据库表结构）
  */
 export interface MonitoredWallet {
-  id: string;
+  id: number; // bigint，自增 ID
   address: string;
   riskScore: number;
   fundingSource: string | null;
@@ -64,9 +65,9 @@ export interface Market {
 }
 
 export interface TradeEvent {
-  id: string;
+  id: number; // bigint，自增 ID
   marketId: string;
-  walletId: string;
+  walletId: number; // bigint，关联到 monitored_wallets.id
   amount: number;
   isBuy: boolean;
   timestamp: string;
@@ -74,7 +75,7 @@ export interface TradeEvent {
 }
 
 export interface ScanLog {
-  id: string;
+  id: number; // bigint，自增 ID
   startedAt: string;
   completedAt: string | null;
   durationMs: number | null;
@@ -86,6 +87,29 @@ export interface ScanLog {
   errors: number;
   success: boolean;
   errorMessage: string | null;
+  createdAt: string;
+}
+
+export interface WalletAnalysisHistory {
+  id: number; // bigint，自增 ID
+  walletAddress: string;
+  totalScore: number;
+  isSuspicious: boolean;
+  analysisDetails: string | null;
+  walletAgeScore: number;
+  walletAgeHours: number | null;
+  transactionCountScore: number;
+  transactionCountNonce: number | null;
+  marketParticipationScore: number;
+  marketParticipationCount: number;
+  transactionAmountScore: number;
+  transactionAmount: number | null;
+  wcTxGapScore: number;
+  wcTxGapPercentage: number | null;
+  transactionRecencyScore: number;
+  transactionRecencyHours: number | null;
+  fundingSource: string | null;
+  analyzedAt: string;
   createdAt: string;
 }
 

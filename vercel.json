@@ -1,8 +1,13 @@
 {
+  "regions": ["sin1"],
   "crons": [
     {
       "path": "/api/cron/scan",
       "schedule": "0 0 * * *"
+    },
+    {
+      "path": "/api/cron/cleanup",
+      "schedule": "0 2 * * *"
     }
   ]
 }

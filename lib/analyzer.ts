@@ -74,51 +74,255 @@ function createPolygonClient(): PublicClient {
 }
 
 /**
+ * 通过 Alchemy API 获取钱包第一笔交易时间
+ */
+async function getFirstTxTimeFromAlchemy(address: Address): Promise<Date | null> {
+  const alchemyUrl = process.env.ALCHEMY_POLYGON_URL;
+  if (!alchemyUrl || alchemyUrl.includes('demo')) {
+    console.error(`[验证模式] ALCHEMY_POLYGON_URL 未配置或无效: ${alchemyUrl || '未设置'}`);
+    return null; // 没有配置有效的 Alchemy URL
+  }
+
+  try {
+    console.log(`[验证模式] 🔍 正在通过 Alchemy API 查询钱包 ${address} 的第一笔交易...`);
+    
+    // 方法1: 先查询 fromAddress（钱包发送的交易）- 查询所有类型的交易
+    let response = await fetch(alchemyUrl, {
+      method: 'POST',
+      headers: { 
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'alchemy_getAssetTransfers',
+        params: [{
+          fromBlock: '0x0',
+          toBlock: 'latest',
+          fromAddress: address,
+          category: ['external', 'internal', 'erc20', 'erc721', 'erc1155'], // 查询所有类型的交易
+          maxCount: '0x1', // 使用十六进制字符串格式
+          order: 'asc', // 按时间升序，获取第一笔
+        }],
+      }),
+      signal: AbortSignal.timeout(10000), // 10秒超时
+    });
+
+    let data = await response.json();
+    let firstTransfer = null;
+
+    // 如果 fromAddress 没有找到，尝试查询 toAddress（钱包接收的交易）
+    if (!data.result?.transfers || data.result.transfers.length === 0) {
+      console.log(`[验证模式] 📤 钱包 ${address} 没有发送交易，尝试查询接收交易...`);
+      
+      response = await fetch(alchemyUrl, {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 2,
+          method: 'alchemy_getAssetTransfers',
+          params: [{
+            fromBlock: '0x0',
+            toBlock: 'latest',
+            toAddress: address,
+            category: ['external', 'internal', 'erc20', 'erc721', 'erc1155'], // 查询所有类型的交易
+            maxCount: '0x1', // 使用十六进制字符串格式
+            order: 'asc',
+          }],
+        }),
+        signal: AbortSignal.timeout(10000),
+      });
+
+      data = await response.json();
+    }
+
+    // 如果还是没有找到，说明钱包确实没有任何交易记录
+    // 这种情况下，我们需要通过其他方式判断（比如查询 nonce）
+
+    if (!response.ok) {
+      console.error(`[验证模式] ❌ Alchemy API HTTP 错误: ${response.status} ${response.statusText}`);
+      return null;
+    }
+    
+    // 检查 API 错误
+    if (data.error) {
+      console.error(`[验证模式] ❌ Alchemy API 返回错误:`, JSON.stringify(data.error, null, 2));
+      return null;
+    }
+
+    // 调试：打印完整响应
+    if (!data.result) {
+      console.error(`[验证模式] ❌ Alchemy API 响应中没有 result 字段:`, JSON.stringify(data, null, 2));
+      return null;
+    }
+
+    if (!data.result.transfers || data.result.transfers.length === 0) {
+      console.warn(`[验证模式] ⚠️  钱包 ${address} 在 Alchemy API 中没有找到任何交易记录`);
+      console.warn(`[验证模式]   完整响应:`, JSON.stringify(data, null, 2));
+      
+      // 关键思考：钱包在 Polymarket 有交易，但 Alchemy 查不到，可能的原因：
+      // 1. Polymarket 交易是链下撮合，只有结算上链（钱包可能不是直接参与者）
+      // 2. 交易是通过合约调用完成的，Alchemy 的 getAssetTransfers 可能不包含所有合约调用
+      // 3. 钱包可能只接收了代币，从未主动发送过交易
+      // 4. 钱包可能是 Polymarket 的内部钱包或代理钱包地址
+      
+      // 尝试通过 RPC 查询 nonce 来验证钱包是否真的没有任何主动交易
+      try {
+        const client = createPolygonClient();
+        const nonce = await client.getTransactionCount({ address });
+        console.log(`[验证模式] 📊 钱包 ${address} 的 nonce: ${nonce}`);
+        
+        if (nonce === 0) {
+          console.warn(`[验证模式] ⚠️  钱包 nonce=0，说明从未主动发送过交易`);
+          console.warn(`[验证模式] 💡 钱包在 Polymarket 有交易，可能是通过其他方式（如被合约调用）完成的`);
+          
+          // 查询钱包余额，看看是否有资金
+          try {
+            const balance = await client.getBalance({ address });
+            const balanceEth = Number(balance) / 1e18;
+            console.log(`[验证模式] 💰 钱包余额: ${balanceEth.toFixed(6)} MATIC`);
+            
+            if (balance > BigInt(0)) {
+              console.warn(`[验证模式] 💡 钱包有余额，说明确实有资金流入，但无法确定资金来源和创建时间`);
+              console.warn(`[验证模式] 💡 可能是 Polymarket 的内部钱包或代理钱包`);
+            } else {
+              console.warn(`[验证模式] 💡 钱包余额为 0，可能是临时钱包或已清空`);
+            }
+          } catch (balanceError) {
+            console.warn(`[验证模式] ⚠️  查询余额失败:`, balanceError);
+          }
+          
+          console.warn(`[验证模式] 💡 这种情况下，钱包创建时间无法准确确定，返回当前时间作为保守估计`);
+          // 对于这种情况，返回当前时间作为创建时间（保守估计）
+          return new Date();
+        } else {
+          console.warn(`[验证模式] ⚠️  钱包 nonce=${nonce}，说明有 ${nonce} 笔主动交易`);
+          console.warn(`[验证模式] ⚠️  但 Alchemy API 查询不到，可能是：`);
+          console.warn(`[验证模式]    1. API 数据同步延迟`);
+          console.warn(`[验证模式]    2. API 查询范围限制（某些交易类型未包含）`);
+          console.warn(`[验证模式]    3. 交易是通过特殊合约完成的，不在标准交易类型中`);
+          // nonce > 0 但查询不到交易，说明 Alchemy API 可能有问题
+          throw new Error(`[验证模式] 钱包 nonce=${nonce}（有 ${nonce} 笔主动交易）但 Alchemy API 查询不到交易记录。钱包在 Polymarket 有交易，说明交易确实存在，但 Alchemy API 可能无法查询到这些交易。`);
+        }
+      } catch (rpcError) {
+        console.error(`[验证模式] ❌ RPC 查询 nonce 失败:`, rpcError);
+        // RPC 查询失败，返回 null
+        return null;
+      }
+    }
+
+    firstTransfer = data.result.transfers[0];
+    console.log(`[验证模式] 📦 找到第一笔交易:`, JSON.stringify({
+      hash: firstTransfer.hash,
+      blockNum: firstTransfer.blockNum,
+      metadata: firstTransfer.metadata,
+    }, null, 2));
+
+    // 方法1: 尝试从 metadata.blockTimestamp 获取
+    if (firstTransfer.metadata?.blockTimestamp) {
+      const timestamp = parseInt(firstTransfer.metadata.blockTimestamp);
+      const date = new Date(timestamp * 1000);
+      console.log(`[验证模式] ✅ 从 metadata.blockTimestamp 解析到时间戳: ${timestamp} -> ${date.toISOString()}`);
+      return date;
+    }
+
+    // 方法2: 如果没有 blockTimestamp，通过 blockNum 查询区块时间戳
+    if (firstTransfer.blockNum) {
+      try {
+        console.log(`[验证模式] 🔍 metadata 中没有 blockTimestamp，尝试通过区块号 ${firstTransfer.blockNum} 查询...`);
+        const client = createPolygonClient();
+        const blockNumber = BigInt(firstTransfer.blockNum);
+        const block = await client.getBlock({ blockNumber });
+        
+        if (block && block.timestamp) {
+          const date = new Date(Number(block.timestamp) * 1000);
+          console.log(`[验证模式] ✅ 通过区块号查询到时间戳: ${block.timestamp} -> ${date.toISOString()}`);
+          return date;
+        }
+      } catch (blockError) {
+        console.error(`[验证模式] ❌ 通过区块号查询时间戳失败:`, blockError);
+      }
+    }
+
+    // 方法3: 如果都失败了，尝试通过 Alchemy API 查询区块信息
+    if (firstTransfer.blockNum) {
+      try {
+        console.log(`[验证模式] 🔍 尝试通过 Alchemy API 查询区块 ${firstTransfer.blockNum} 的时间戳...`);
+        const blockResponse = await fetch(alchemyUrl, {
+          method: 'POST',
+          headers: { 
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+          },
+          body: JSON.stringify({
+            jsonrpc: '2.0',
+            id: 999,
+            method: 'eth_getBlockByNumber',
+            params: [firstTransfer.blockNum, false], // false 表示不返回完整交易数据
+          }),
+          signal: AbortSignal.timeout(10000),
+        });
+
+        const blockData = await blockResponse.json();
+        if (blockData.result && blockData.result.timestamp) {
+          const timestamp = parseInt(blockData.result.timestamp, 16); // 十六进制转十进制
+          const date = new Date(timestamp * 1000);
+          console.log(`[验证模式] ✅ 通过 Alchemy API 查询到区块时间戳: ${timestamp} -> ${date.toISOString()}`);
+          return date;
+        }
+      } catch (alchemyBlockError) {
+        console.error(`[验证模式] ❌ 通过 Alchemy API 查询区块时间戳失败:`, alchemyBlockError);
+      }
+    }
+
+    console.error(`[验证模式] ❌ 无法获取第一笔交易的时间戳:`, JSON.stringify(firstTransfer, null, 2));
+    return null;
+  } catch (error) {
+    console.error(`[验证模式] ❌ Alchemy API 调用异常:`, error);
+    if (error instanceof Error) {
+      console.error(`[验证模式]   错误信息: ${error.message}`);
+      console.error(`[验证模式]   错误堆栈: ${error.stack}`);
+    }
+    return null;
+  }
+}
+
+/**
  * 获取钱包的第一笔交易时间
- * 使用基于 nonce 的启发式方法，不依赖外部 API（如 Polygonscan）
+ * 【验证模式】仅使用 Alchemy API，如果查不到则抛出错误
  */
 async function getFirstTransactionTime(
   client: PublicClient,
   address: Address
-): Promise<Date | null> {
+): Promise<Date> {
+  const alchemyUrl = process.env.ALCHEMY_POLYGON_URL;
+  
+  if (!alchemyUrl || alchemyUrl.includes('demo')) {
+    throw new Error(`[验证模式] ALCHEMY_POLYGON_URL 未配置或无效: ${alchemyUrl || '未设置'}`);
+  }
+
   try {
-    // 优先方法：使用 nonce 推断钱包年龄（不依赖外部 API）
-    const nonce = await client.getTransactionCount({ address });
+    // 仅使用 Alchemy API
+    const alchemyTime = await getFirstTxTimeFromAlchemy(address);
     
-    if (nonce === 0) {
-      // nonce = 0 表示钱包从未发送过交易，可能是全新钱包
-      // 返回当前时间，表示"刚刚创建"
-      console.log(`[Analyzer] 钱包 ${address} nonce=0，推断为新钱包（刚创建）`);
-      return new Date();
+    if (!alchemyTime) {
+      throw new Error(`[验证模式] 无法通过 Alchemy API 获取钱包 ${address} 的第一笔交易时间`);
     }
 
-    // 如果 nonce 很小（< 10），使用启发式方法估算钱包年龄
-    if (nonce < 10) {
-      // 启发式规则：
-      // - nonce = 1: 假设钱包创建于 12 小时前（保守估计）
-      // - nonce = 2-5: 假设每笔交易间隔 12-24 小时
-      // - nonce = 6-9: 假设每笔交易间隔 24-48 小时
-      let estimatedAgeHours: number;
-      if (nonce === 1) {
-        estimatedAgeHours = 12; // 保守估计：12小时
-      } else if (nonce <= 5) {
-        estimatedAgeHours = nonce * 12; // 每笔交易间隔12小时
-      } else {
-        estimatedAgeHours = 5 * 12 + (nonce - 5) * 24; // 前5笔每12小时，之后每24小时
-      }
-      
-      const estimatedCreationTime = new Date(Date.now() - estimatedAgeHours * 60 * 60 * 1000);
-      console.log(`[Analyzer] 钱包 ${address} nonce=${nonce}，估算创建时间: ${estimatedCreationTime.toISOString()} (约 ${estimatedAgeHours.toFixed(1)} 小时前)`);
-      return estimatedCreationTime;
-    }
-
-    // 对于交易较多的钱包（nonce >= 10），无法准确判断创建时间
-    // 返回 null，让调用者知道无法确定
-    console.log(`[Analyzer] 钱包 ${address} nonce=${nonce}，交易较多，无法准确判断创建时间`);
-    return null;
+    console.log(`[验证模式] ✅ 通过 Alchemy API 获取到钱包 ${address} 的第一笔交易时间: ${alchemyTime.toISOString()}`);
+    return alchemyTime;
   } catch (error) {
-    console.error('[Analyzer] 查询 nonce 失败:', error);
-    return null;
+    // 如果是我们抛出的错误，直接重新抛出
+    if (error instanceof Error && error.message.includes('[验证模式]')) {
+      throw error;
+    }
+    // 其他错误也抛出，停止扫描
+    throw new Error(`[验证模式] Alchemy API 调用失败: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
@@ -255,26 +459,21 @@ export async function analyzeWallet(
     const client = createPolygonClient();
 
     // 1. 检查钱包年龄（< 24小时，+50分）
+    // 【验证模式】必须通过 Alchemy API 获取，失败则抛出错误
     const firstTxTime = await getFirstTransactionTime(client, walletAddress);
-    if (firstTxTime) {
-      const now = new Date();
-      const ageMs = now.getTime() - firstTxTime.getTime();
-      const ageHours = ageMs / (1000 * 60 * 60);
-      checks.walletAge.ageHours = ageHours;
-      checks.walletAge.firstTxTime = firstTxTime;
+    const now = new Date();
+    const ageMs = now.getTime() - firstTxTime.getTime();
+    const ageHours = ageMs / (1000 * 60 * 60);
+    checks.walletAge.ageHours = ageHours;
+    checks.walletAge.firstTxTime = firstTxTime;
 
-      if (ageHours < 24) {
-        score += 50;
-        checks.walletAge.score = 50;
-        checks.walletAge.passed = true;
-        details.push(`钱包创建时间小于 24 小时（${ageHours.toFixed(2)} 小时），风险分 +50`);
-      } else {
-        details.push(`钱包创建时间: ${ageHours.toFixed(2)} 小时前`);
-      }
+    if (ageHours < 24) {
+      score += 50;
+      checks.walletAge.score = 50;
+      checks.walletAge.passed = true;
+      details.push(`钱包创建时间小于 24 小时（${ageHours.toFixed(2)} 小时），风险分 +50`);
     } else {
-      // 无法确定钱包创建时间（nonce >= 10 的情况）
-      // 这种情况下，钱包年龄检查不给予分数
-      details.push(`无法确定钱包创建时间（交易次数较多，nonce >= 10）`);
+      details.push(`钱包创建时间: ${ageHours.toFixed(2)} 小时前`);
     }
 
     // 2. 检查交易次数（nonce < 10，+30分）
@@ -370,7 +569,13 @@ export async function analyzeWallet(
     }
 
     // 判断是否可疑（总分 >= 50 视为可疑）
-    const isSuspicious = score >= 50;
+    // 但是，如果交易金额 < 1000，即使分数再高也不标记为可疑
+    let isSuspicious = score >= 50;
+    
+    if (currentTradeAmount !== undefined && currentTradeAmount < 1000) {
+      isSuspicious = false;
+      details.push(`交易金额过小（$${currentTradeAmount.toFixed(2)} < $1000），解除可疑标记`);
+    }
 
     return {
       isSuspicious,

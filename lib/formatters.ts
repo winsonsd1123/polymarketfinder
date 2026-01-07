@@ -1,5 +1,6 @@
 import { formatDistanceToNow } from 'date-fns';
 import { zhCN } from 'date-fns/locale';
+import { fromBeijingTime } from './time-utils';
 
 /**
  * 格式化钱包地址（显示前6位+后4位）
@@ -13,10 +14,14 @@ export function formatAddress(address: string): string {
 
 /**
  * 格式化相对时间（如 "2 mins ago"）
+ * 注意：数据库中存储的是北京时间（UTC+8），需要转换后显示
  */
 export function formatRelativeTime(date: string | Date): string {
   try {
-    const dateObj = typeof date === 'string' ? new Date(date) : date;
+    // 如果是从数据库读取的字符串，需要从北京时间转换
+    const dateObj = typeof date === 'string' 
+      ? fromBeijingTime(date) 
+      : date;
     return formatDistanceToNow(dateObj, {
       addSuffix: true,
       locale: zhCN,
@@ -39,8 +44,13 @@ export function calculateWcTxGap(
   }
 
   try {
-    const walletTime = typeof walletCreatedAt === 'string' ? new Date(walletCreatedAt) : walletCreatedAt;
-    const tradeTime = typeof firstTradeTime === 'string' ? new Date(firstTradeTime) : firstTradeTime;
+    // 从数据库读取的时间是北京时间，需要转换
+    const walletTime = typeof walletCreatedAt === 'string' 
+      ? fromBeijingTime(walletCreatedAt) 
+      : walletCreatedAt;
+    const tradeTime = typeof firstTradeTime === 'string' 
+      ? fromBeijingTime(firstTradeTime) 
+      : firstTradeTime;
 
     const diffMs = tradeTime.getTime() - walletTime.getTime();
     const diffHours = diffMs / (1000 * 60 * 60);
