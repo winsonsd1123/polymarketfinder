@@ -57,6 +57,7 @@ export async function GET(
       amountUsdc: trade.amount,
       isBuy: trade.isBuy,
       direction: trade.isBuy ? '买入' : '卖出',
+      outcome: trade.outcome || null, // YES 或 NO
       timestamp: trade.timestamp,
       createdAt: trade.createdAt,
     }));

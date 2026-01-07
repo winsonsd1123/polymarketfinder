@@ -11,6 +11,7 @@ export interface PolymarketTrade {
   side?: 'BUY' | 'SELL'; // 交易方向（从 Data API 获取）
   title?: string; // 市场标题（从 Data API 获取）
   conditionId?: string; // 条件ID
+  outcome?: 'YES' | 'NO'; // 交易结果：YES 或 NO（从 asset_id 或 API 数据解析）
 }
 
 /**
@@ -288,6 +289,49 @@ class PolymarketClient {
                     return null;
                   }
                   
+                  // 解析 outcome (YES/NO)
+                  // 根据实际测试数据：
+                  // - outcome 字段值: "Yes", "Up" (对应 YES), "Down" (对应 NO)
+                  // - outcomeIndex: 0 对应 YES ("Up" 或 "Yes"), 1 对应 NO ("Down")
+                  let outcome: 'YES' | 'NO' | undefined = undefined;
+                  
+                  if (trade.outcome) {
+                    const outcomeStr = String(trade.outcome).trim();
+                    const outcomeUpper = outcomeStr.toUpperCase();
+                    
+                    // 直接匹配 YES/NO
+                    if (outcomeUpper === 'YES' || outcomeUpper === 'NO') {
+                      outcome = outcomeUpper as 'YES' | 'NO';
+                    }
+                    // 处理 "Up" → YES (常见于价格预测市场)
+                    else if (outcomeUpper === 'UP') {
+                      outcome = 'YES';
+                    }
+                    // 处理 "Down" → NO (常见于价格预测市场)
+                    else if (outcomeUpper === 'DOWN') {
+                      outcome = 'NO';
+                    }
+                    // 处理首字母大写的 "Yes"
+                    else if (outcomeStr === 'Yes') {
+                      outcome = 'YES';
+                    }
+                    // 处理首字母大写的 "No" (虽然测试中未发现，但保留兼容性)
+                    else if (outcomeStr === 'No') {
+                      outcome = 'NO';
+                    }
+                  }
+                  
+                  // 如果 outcome 字段无法解析，使用 outcomeIndex 作为备选
+                  // outcomeIndex 0 = YES, 1 = NO (根据实际测试数据验证)
+                  if (!outcome && trade.outcomeIndex !== undefined) {
+                    const index = Number(trade.outcomeIndex);
+                    if (index === 0) {
+                      outcome = 'YES';
+                    } else if (index === 1) {
+                      outcome = 'NO';
+                    }
+                  }
+                  
                   return {
                     maker_address: makerAddress,
                     asset_id: assetId,
@@ -296,6 +340,7 @@ class PolymarketClient {
                     side: (trade.side === 'BUY' || trade.side === 'SELL') ? trade.side : undefined,
                     title: trade.title || trade.slug || undefined,
                     conditionId: trade.conditionId || undefined,
+                    outcome: outcome,
                   };
                 } catch (error) {
                   console.warn(`[Polymarket API] 解析交易数据失败:`, error);
@@ -516,6 +561,49 @@ class PolymarketClient {
               return null;
             }
             
+            // 解析 outcome (YES/NO)
+            // 根据实际测试数据：
+            // - outcome 字段值: "Yes", "Up" (对应 YES), "Down" (对应 NO)
+            // - outcomeIndex: 0 对应 YES ("Up" 或 "Yes"), 1 对应 NO ("Down")
+            let outcome: 'YES' | 'NO' | undefined = undefined;
+            
+            if (trade.outcome) {
+              const outcomeStr = String(trade.outcome).trim();
+              const outcomeUpper = outcomeStr.toUpperCase();
+              
+              // 直接匹配 YES/NO
+              if (outcomeUpper === 'YES' || outcomeUpper === 'NO') {
+                outcome = outcomeUpper as 'YES' | 'NO';
+              }
+              // 处理 "Up" → YES (常见于价格预测市场)
+              else if (outcomeUpper === 'UP') {
+                outcome = 'YES';
+              }
+              // 处理 "Down" → NO (常见于价格预测市场)
+              else if (outcomeUpper === 'DOWN') {
+                outcome = 'NO';
+              }
+              // 处理首字母大写的 "Yes"
+              else if (outcomeStr === 'Yes') {
+                outcome = 'YES';
+              }
+              // 处理首字母大写的 "No" (虽然测试中未发现，但保留兼容性)
+              else if (outcomeStr === 'No') {
+                outcome = 'NO';
+              }
+            }
+            
+            // 如果 outcome 字段无法解析，使用 outcomeIndex 作为备选
+            // outcomeIndex 0 = YES, 1 = NO (根据实际测试数据验证)
+            if (!outcome && trade.outcomeIndex !== undefined) {
+              const index = Number(trade.outcomeIndex);
+              if (index === 0) {
+                outcome = 'YES';
+              } else if (index === 1) {
+                outcome = 'NO';
+              }
+            }
+            
             return {
               maker_address: makerAddress,
               asset_id: assetId,
@@ -524,6 +612,7 @@ class PolymarketClient {
               side: (trade.side === 'BUY' || trade.side === 'SELL') ? trade.side : undefined,
               title: trade.title || trade.slug || undefined,
               conditionId: trade.conditionId || undefined,
+              outcome: outcome,
             };
           }).filter((trade): trade is PolymarketTrade => trade !== null);
           

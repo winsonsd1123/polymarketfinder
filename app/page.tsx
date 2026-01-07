@@ -39,6 +39,7 @@ interface Trade {
   amountUsdc: number;
   isBuy: boolean;
   direction: string;
+  outcome: string | null; // YES 或 NO
   timestamp: string;
   createdAt: string;
 }
@@ -632,6 +633,7 @@ export default function Home() {
                         <TableHead className="font-bold text-gray-900 text-base">时间</TableHead>
                         <TableHead className="font-bold text-gray-900 text-base">市场</TableHead>
                         <TableHead className="font-bold text-gray-900 text-base">方向</TableHead>
+                        <TableHead className="font-bold text-gray-900 text-base">结果</TableHead>
                         <TableHead className="font-bold text-gray-900 text-base">金额 (USDC)</TableHead>
                       </TableRow>
                     </TableHeader>
@@ -660,6 +662,21 @@ export default function Home() {
                             >
                               {trade.direction}
                             </span>
+                          </TableCell>
+                          <TableCell>
+                            {trade.outcome ? (
+                              <span
+                                className={`text-base font-bold px-3 py-1 rounded ${
+                                  trade.outcome === 'YES'
+                                    ? 'text-blue-700 bg-blue-100'
+                                    : 'text-purple-700 bg-purple-100'
+                                }`}
+                              >
+                                {trade.outcome}
+                              </span>
+                            ) : (
+                              <span className="text-base text-gray-400">未知</span>
+                            )}
                           </TableCell>
                           <TableCell className="font-mono text-base font-semibold text-gray-900">
                             ${trade.amountUsdc.toFixed(2)}

@@ -202,6 +202,9 @@ async function processWallet(
 
       // 从交易数据中获取方向（Data API 返回 side 字段：BUY 或 SELL）
       const isBuy = (trade as any).side === 'BUY' || (trade as any).side !== 'SELL';
+      
+      // 获取 outcome (YES/NO)
+      const outcome = trade.outcome || null;
 
       // 创建交易事件（交易时间转换为北京时间）
       // 使用 parseToUTCDate 确保在 Vercel（UTC）和本地（UTC+8）环境下都能正确解析
@@ -213,6 +216,7 @@ async function processWallet(
           walletId: wallet.id,
           amount: trade.amount_usdc,
           isBuy: isBuy,
+          outcome: outcome, // YES 或 NO
           timestamp: tradeBeijingTime,
           createdAt: getBeijingTime(), // 显式设置创建时间为北京时间
         });

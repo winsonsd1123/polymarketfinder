@@ -71,6 +71,7 @@ export interface TradeEvent {
   walletId: number; // bigint，关联到 monitored_wallets.id
   amount: number;
   isBuy: boolean;
+  outcome: string | null; // YES 或 NO
   timestamp: string;
   createdAt: string;
 }
