@@ -51,8 +51,9 @@ export interface MonitoredWallet {
   riskScore: number;
   fundingSource: string | null;
   lastActiveAt: string | null;
-  createdAt: string;
-  updatedAt: string;
+  walletCreatedAt: string | null; // 钱包在链上的创建时间（UTC时间，从 Alchemy API 获取）
+  createdAt: string; // 记录创建时间（北京时间）
+  updatedAt: string; // 记录更新时间（北京时间）
 }
 
 export interface Market {
@@ -98,6 +99,7 @@ export interface WalletAnalysisHistory {
   analysisDetails: string | null;
   walletAgeScore: number;
   walletAgeHours: number | null;
+  walletCreatedAt: string | null; // 钱包在链上的创建时间（北京时间）
   transactionCountScore: number;
   transactionCountNonce: number | null;
   marketParticipationScore: number;

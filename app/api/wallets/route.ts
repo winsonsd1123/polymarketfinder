@@ -78,6 +78,7 @@ export async function GET() {
         riskScore: wallet.riskScore,
         fundingSource: wallet.fundingSource,
         createdAt: wallet.createdAt,
+        walletCreatedAt: wallet.walletCreatedAt || null, // 钱包在链上的创建时间
         lastActiveAt: wallet.lastActiveAt || null,
         updatedAt: wallet.updatedAt,
         firstTradeTime: firstTrade?.timestamp || null,

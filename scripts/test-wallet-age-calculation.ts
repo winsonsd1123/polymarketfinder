@@ -4,7 +4,7 @@
 console.log('🧪 测试钱包创建时间评估逻辑\n');
 
 // 模拟场景
-const scenarios = [
+const walletAgeScenarios = [
   {
     name: '场景1: Alchemy 返回 Unix 时间戳',
     alchemyTimestamp: 1704612600, // Unix 秒级时间戳
@@ -19,7 +19,7 @@ const scenarios = [
   },
 ];
 
-scenarios.forEach((scenario, index) => {
+walletAgeScenarios.forEach((scenario, index) => {
   console.log(`\n${scenario.name}:`);
   
   // 步骤1: Alchemy 返回时间戳，转换为 Date

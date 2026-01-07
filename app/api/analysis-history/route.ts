@@ -50,6 +50,7 @@ export async function GET(request: NextRequest) {
       analysisDetails: item.analysis_details,
       walletAgeScore: item.wallet_age_score,
       walletAgeHours: item.wallet_age_hours,
+      walletCreatedAt: item.wallet_created_at || null, // 钱包在链上的创建时间（北京时间）
       transactionCountScore: item.transaction_count_score,
       transactionCountNonce: item.transaction_count_nonce,
       marketParticipationScore: item.market_participation_score,

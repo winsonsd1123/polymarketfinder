@@ -23,7 +23,8 @@ interface Wallet {
   address: string;
   riskScore: number;
   fundingSource: string | null;
-  createdAt: string;
+  createdAt: string; // 记录创建时间（北京时间）
+  walletCreatedAt: string | null; // 钱包在链上的创建时间（北京时间）
   lastActiveAt: string | null;
   firstTradeTime: string | null;
   markets: Array<{ id: string; title: string }>;
@@ -66,6 +67,7 @@ interface AnalysisHistory {
   analysisDetails: string | null;
   walletAgeScore: number;
   walletAgeHours: number | null;
+  walletCreatedAt: string | null; // 钱包在链上的创建时间（北京时间）
   transactionCountScore: number;
   transactionCountNonce: number | null;
   marketParticipationScore: number;
@@ -394,6 +396,14 @@ export default function Home() {
                         )}
                       </div>
                     )}
+                    {history.walletCreatedAt && (
+                      <div>
+                        <span className="text-muted-foreground">钱包创建: </span>
+                        <span className="font-medium text-xs">
+                          {formatRelativeTime(history.walletCreatedAt)}
+                        </span>
+                      </div>
+                    )}
                     {history.transactionCountScore > 0 && (
                       <div>
                         <span className="text-muted-foreground">交易次数: </span>
@@ -516,8 +526,10 @@ export default function Home() {
                     </span>
                   </TableCell>
                   <TableCell className="text-muted-foreground">
-                    {wallet.firstTradeTime
-                      ? calculateWcTxGap(wallet.createdAt, wallet.firstTradeTime)
+                    {wallet.walletCreatedAt && wallet.firstTradeTime
+                      ? calculateWcTxGap(wallet.walletCreatedAt, wallet.firstTradeTime)
+                      : wallet.firstTradeTime
+                      ? '钱包创建时间未知'
                       : '无交易'}
                   </TableCell>
                   <TableCell>
@@ -591,6 +603,14 @@ export default function Home() {
               <div className="bg-white rounded-lg p-4 border border-gray-200">
                 <p className="text-sm font-medium text-gray-500 mb-2">发现时间</p>
                 <p className="text-xl font-semibold text-gray-900">{formatRelativeTime(selectedWallet.createdAt)}</p>
+              </div>
+              <div className="bg-white rounded-lg p-4 border border-gray-200">
+                <p className="text-sm font-medium text-gray-500 mb-2">钱包创建时间</p>
+                <p className="text-xl font-semibold text-gray-900">
+                  {selectedWallet.walletCreatedAt
+                    ? formatRelativeTime(selectedWallet.walletCreatedAt)
+                    : '未知'}
+                </p>
               </div>
               <div className="bg-white rounded-lg p-4 border border-gray-200">
                 <p className="text-sm font-medium text-gray-500 mb-2">参与市场数</p>

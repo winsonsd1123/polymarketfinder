@@ -73,7 +73,7 @@ function calculateScore(
   return { score, details, isSuspicious };
 }
 
-const testCases = [
+const fixedTestCases = [
   {
     name: '案例1: 新钱包，交易少，金额小（修复后）',
     walletAgeHours: 10,
@@ -107,7 +107,7 @@ console.log('5. WC/TX gap < 20%: +15 分');
 console.log('6. 交易时间 < 5 小时: +10 分');
 console.log('7. 总分 >= 50 且交易金额 >= $1000 才标记为可疑\n');
 
-testCases.forEach((testCase, index) => {
+fixedTestCases.forEach((testCase, index) => {
   console.log(`\n测试 ${index + 1}: ${testCase.name}`);
   
   const result = calculateScore(

@@ -3,7 +3,7 @@ import pLimit from 'p-limit';
 import { fetchRecentTrades, fetchRecentTradesBatch, type PolymarketTrade } from '@/lib/polymarket';
 import { analyzeWallet, type WalletAnalysisResult } from '@/lib/analyzer';
 import { supabase, TABLES } from '@/lib/supabase';
-import { getBeijingTime, toBeijingTime } from '@/lib/time-utils';
+import { getBeijingTime, toBeijingTime, parseToUTCDate } from '@/lib/time-utils';
 
 /**
  * 扫描结果统计
@@ -50,7 +50,8 @@ async function processWallet(
 
     // 新钱包，进行分析（传入当前交易信息）
     // 【验证模式】如果 Alchemy API 查不到钱包创建时间，会抛出错误
-    const currentTradeTime = new Date(trade.timestamp);
+    // 使用 parseToUTCDate 确保在 Vercel（UTC）和本地（UTC+8）环境下都能正确解析
+    const currentTradeTime = parseToUTCDate(trade.timestamp);
     let analysis;
     try {
       analysis = await analyzeWallet(
@@ -97,6 +98,12 @@ async function processWallet(
 
     // 保存分析历史记录（无论是否可疑都保存）
     try {
+      // 钱包创建时间（UTC时间，从 Alchemy API 获取的第一笔交易时间）
+      // 需要转换为北京时间存储
+      const walletCreatedAtBeijing = analysis.checks.walletAge.firstTxTime
+        ? toBeijingTime(analysis.checks.walletAge.firstTxTime)
+        : null;
+      
       await supabase
         .from(TABLES.WALLET_ANALYSIS_HISTORY)
         .insert({
@@ -106,6 +113,7 @@ async function processWallet(
           analysis_details: analysis.details,
           wallet_age_score: analysis.checks.walletAge.score,
           wallet_age_hours: analysis.checks.walletAge.ageHours,
+          wallet_created_at: walletCreatedAtBeijing, // 钱包在链上的创建时间（北京时间）
           transaction_count_score: analysis.checks.transactionCount.score,
           transaction_count_nonce: analysis.checks.transactionCount.nonce,
           market_participation_score: analysis.checks.marketParticipation.score,
@@ -167,6 +175,12 @@ async function processWallet(
 
       // 创建监控钱包（使用北京时间）
       const beijingNow = getBeijingTime();
+      // 钱包创建时间（UTC时间，从 Alchemy API 获取的第一笔交易时间）
+      // 需要转换为北京时间存储
+      const walletCreatedAtBeijing = analysis.checks.walletAge.firstTxTime
+        ? toBeijingTime(analysis.checks.walletAge.firstTxTime)
+        : null;
+      
       const { data: wallet, error: walletError } = await supabase
         .from(TABLES.MONITORED_WALLETS)
         .insert({
@@ -174,6 +188,7 @@ async function processWallet(
           riskScore: analysis.score,
           fundingSource: analysis.checks.fundingSource?.sourceAddress || null,
           lastActiveAt: beijingNow,
+          walletCreatedAt: walletCreatedAtBeijing, // 钱包在链上的创建时间（北京时间）
           createdAt: beijingNow, // 显式设置创建时间为北京时间
           updatedAt: beijingNow, // 显式设置更新时间为北京时间
         })
@@ -189,7 +204,8 @@ async function processWallet(
       const isBuy = (trade as any).side === 'BUY' || (trade as any).side !== 'SELL';
 
       // 创建交易事件（交易时间转换为北京时间）
-      const tradeBeijingTime = toBeijingTime(new Date(trade.timestamp));
+      // 使用 parseToUTCDate 确保在 Vercel（UTC）和本地（UTC+8）环境下都能正确解析
+      const tradeBeijingTime = toBeijingTime(parseToUTCDate(trade.timestamp));
       const { error: tradeError } = await supabase
         .from(TABLES.TRADE_EVENTS)
         .insert({
