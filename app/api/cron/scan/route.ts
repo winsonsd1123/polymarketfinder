@@ -267,6 +267,7 @@ export async function GET(request: NextRequest) {
       .from(TABLES.SCAN_LOGS)
       .insert({
         started_at: scanStartTime,
+        created_at: scanStartTime, // 显式设置创建时间为北京时间，而不是使用数据库默认值
         success: true,
       })
       .select('id')
