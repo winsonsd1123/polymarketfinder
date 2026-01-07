@@ -90,6 +90,12 @@ export async function GET() {
       success: true,
       data: formattedWallets,
       count: formattedWallets.length,
+    }, {
+      headers: {
+        'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
+        'Pragma': 'no-cache',
+        'Expires': '0',
+      },
     });
   } catch (error) {
     console.error('获取钱包列表失败:', error);

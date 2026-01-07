@@ -416,12 +416,14 @@ async function getFundingSource(
  * @param address 钱包地址
  * @param currentTradeAmount 当前交易的金额（USDC），用于检查单笔交易规模
  * @param currentTradeTime 当前交易的时间戳，用于检查交易发生时间
+ * @param currentMarketId 当前交易的市场ID，用于计算市场参与度
  * @returns 分析结果
  */
 export async function analyzeWallet(
   address: string,
   currentTradeAmount?: number,
-  currentTradeTime?: Date
+  currentTradeTime?: Date,
+  currentMarketId?: string
 ): Promise<WalletAnalysisResult> {
   let score = 0;
   const details: string[] = [];
@@ -488,16 +490,51 @@ export async function analyzeWallet(
     }
 
     // 3. 检查市场参与度（< 3个市场，+20分）
-    const marketCount = await getMarketParticipationCount(address);
+    // 注意：需要同时考虑数据库中的历史记录和当前交易的市场
+    let marketCount = await getMarketParticipationCount(address);
+    
+    // 如果当前交易有市场ID，且数据库中还没有这个市场的记录，需要加1
+    if (currentMarketId) {
+      // 检查当前市场是否已经在数据库中
+      const { data: wallet } = await supabase
+        .from(TABLES.MONITORED_WALLETS)
+        .select('id')
+        .eq('address', address.toLowerCase())
+        .single();
+      
+      if (wallet) {
+        const { data: existingTrade } = await supabase
+          .from(TABLES.TRADE_EVENTS)
+          .select('marketId')
+          .eq('walletId', wallet.id)
+          .eq('marketId', currentMarketId)
+          .limit(1)
+          .single();
+        
+        // 如果当前市场不在数据库中，说明这是新市场，需要加1
+        if (!existingTrade) {
+          marketCount += 1;
+        }
+      } else {
+        // 钱包不在数据库中，说明这是第一笔交易，当前市场算作1个
+        marketCount = 1;
+      }
+    }
+    
     checks.marketParticipation.marketCount = marketCount;
 
-    if (marketCount > 0 && marketCount < 3) {
+    // 修复：marketCount = 0 或 1 或 2 都应该加分（< 3个市场）
+    if (marketCount < 3) {
       score += 20;
       checks.marketParticipation.score = 20;
       checks.marketParticipation.passed = true;
-      details.push(`参与市场数量少于 3 个（${marketCount} 个），风险分 +20`);
-    } else if (marketCount === 0) {
-      details.push('该钱包在数据库中暂无交易记录');
+      if (marketCount === 0) {
+        details.push(`参与市场数量为 0（新钱包，仅当前交易），风险分 +20`);
+      } else {
+        details.push(`参与市场数量少于 3 个（${marketCount} 个），风险分 +20`);
+      }
+    } else {
+      details.push(`参与市场数量 >= 3 个（${marketCount} 个）`);
     }
 
     // 4. 检查单笔交易规模（> $10,000，+10分）- 截图规则

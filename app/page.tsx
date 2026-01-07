@@ -99,7 +99,12 @@ export default function Home() {
   // 获取钱包列表
   const fetchWallets = async () => {
     try {
-      const response = await fetch('/api/wallets');
+      const response = await fetch('/api/wallets', {
+        cache: 'no-store',
+        headers: {
+          'Cache-Control': 'no-cache',
+        },
+      });
       const data = await response.json();
       if (data.success) {
         setWallets(data.data);

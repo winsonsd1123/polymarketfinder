@@ -42,12 +42,18 @@ export function fromBeijingTime(beijingTimeString: string): Date {
   // 存储的时间字符串包含了 8 小时的偏移量
   // 需要减去这个偏移量来得到正确的 UTC 时间
   
-  // 处理 PostgreSQL timestamp 格式（如 "2026-01-07 14:57:43.177"）
-  // 将其转换为 ISO 格式以便正确解析
+  // 处理不同的时间格式
   let dateString = beijingTimeString;
+  
+  // 情况1: PostgreSQL timestamp 格式（如 "2026-01-07 14:57:43.177"）
   if (dateString.includes(' ') && !dateString.includes('T')) {
-    // PostgreSQL timestamp 格式，添加 'T' 和 'Z' 使其成为有效的 ISO 字符串
+    // 添加 'T' 和 'Z' 使其成为有效的 ISO 字符串
     dateString = dateString.replace(' ', 'T') + 'Z';
+  }
+  // 情况2: ISO 格式但没有 Z（如 "2026-01-07T14:58:30.756"）
+  else if (dateString.includes('T') && !dateString.includes('Z') && !dateString.includes('+')) {
+    // 添加 'Z' 表示 UTC 时间
+    dateString = dateString + 'Z';
   }
   
   const storedDate = new Date(dateString);

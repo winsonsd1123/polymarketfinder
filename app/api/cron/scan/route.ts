@@ -56,7 +56,8 @@ async function processWallet(
       analysis = await analyzeWallet(
         normalizedAddress,
         trade.amount_usdc,
-        currentTradeTime
+        currentTradeTime,
+        trade.asset_id // 传入当前交易的市场ID，用于计算市场参与度
       );
     } catch (error) {
       // 检查是否是验证模式的错误（Alchemy API 失败）
