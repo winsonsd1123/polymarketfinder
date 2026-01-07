@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase, TABLES } from '@/lib/supabase';
+import { fromBeijingTime } from '@/lib/time-utils';
 
 /**
  * GET /api/scan-logs
@@ -22,6 +23,9 @@ export async function GET(request: NextRequest) {
     }
 
     // 格式化数据
+    // 注意：数据库中的时间字段存储的是加了8小时偏移的"北京时间"
+    // 前端 formatRelativeTime 函数会自动调用 fromBeijingTime 进行转换
+    // 所以这里直接返回原始时间字符串即可
     const formattedLogs = (scanLogs || []).map((log: any) => ({
       id: log.id,
       startedAt: log.started_at,

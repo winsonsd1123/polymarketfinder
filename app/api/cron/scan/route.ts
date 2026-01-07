@@ -117,6 +117,7 @@ async function processWallet(
           transaction_recency_hours: analysis.checks.transactionRecency?.hoursSinceTransaction || null,
           funding_source: analysis.checks.fundingSource?.sourceAddress || null,
           analyzed_at: getBeijingTime(),
+          created_at: getBeijingTime(), // 显式设置创建时间为北京时间，而不是使用数据库默认值
         });
     } catch (error) {
       console.warn(`保存分析历史记录失败: ${error}`);
