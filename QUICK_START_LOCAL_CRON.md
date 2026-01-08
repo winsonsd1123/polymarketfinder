@@ -1,5 +1,13 @@
 # 🚀 本地 Cron Job 快速开始指南（Ubuntu）
 
+## 📦 部署方式选择
+
+**只需要运行扫描脚本？** 查看 [最小化部署指南](./MINIMAL_DEPLOY.md) - 只需上传 2-3 个文件！
+
+**需要完整项目？** 继续阅读下面的完整部署指南。
+
+---
+
 ## 方式一：使用自动化脚本（推荐）
 
 最简单的方式是使用我们提供的设置脚本：
@@ -97,13 +105,27 @@ sudo systemctl status cron
 
 ## 📋 在 Vercel 上设置 CRON_SECRET
 
-1. 登录 Vercel 控制台
-2. 进入项目设置 → Environment Variables
-3. 添加环境变量：
-   - Key: `CRON_SECRET`
-   - Value: 生成一个随机字符串（例如：`openssl rand -hex 32`）
-   - Environment: Production（或所有环境）
-4. 保存后，在本地 `.env` 文件中使用相同的值
+**详细步骤请查看**：[CRON_SECRET_SETUP.md](./CRON_SECRET_SETUP.md)
+
+**快速步骤**：
+
+1. **生成密钥**：
+   ```bash
+   openssl rand -hex 32
+   ```
+
+2. **在 Vercel 上设置**：
+   - 登录 Vercel → 项目 → Settings → Environment Variables
+   - 添加：Key = `CRON_SECRET`，Value = 刚才生成的字符串
+   - 选择 Environment: Production（必须）
+   - 保存
+
+3. **重新部署**：
+   - 环境变量修改后必须重新部署才能生效
+   - Deployments → 最新部署 → Redeploy
+
+4. **在本地使用**：
+   - 在本地服务器的 `.env` 文件中使用相同的 `CRON_SECRET` 值
 
 ## 🔍 常见问题
 
