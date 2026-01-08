@@ -54,6 +54,7 @@ export interface MonitoredWallet {
   walletCreatedAt: string | null; // 钱包在链上的创建时间（UTC时间，从 Alchemy API 获取）
   createdAt: string; // 记录创建时间（北京时间）
   updatedAt: string; // 记录更新时间（北京时间）
+  isStarred: boolean; // 是否关注
 }
 
 export interface Market {

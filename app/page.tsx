@@ -31,6 +31,7 @@ interface Wallet {
   firstTradeTime: string | null;
   markets: Array<{ id: string; title: string }>;
   tradeCount: number;
+  isStarred: boolean; // 是否关注
 }
 
 interface Trade {
@@ -102,6 +103,7 @@ export default function Home() {
   const [showHistory, setShowHistory] = useState(false);
   const [refreshProgress, setRefreshProgress] = useState(0);
   const [refreshStatus, setRefreshStatus] = useState<string>('');
+  const [updatingStar, setUpdatingStar] = useState<string | null>(null);
 
   // 获取钱包列表
   const fetchWallets = async () => {
@@ -114,7 +116,14 @@ export default function Home() {
       });
       const data = await response.json();
       if (data.success) {
-        setWallets(data.data);
+        // 排序：关注的钱包排在前面，然后按创建时间倒序
+        const sortedWallets = data.data.sort((a: Wallet, b: Wallet) => {
+          if (a.isStarred !== b.isStarred) {
+            return a.isStarred ? -1 : 1;
+          }
+          return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+        });
+        setWallets(sortedWallets);
       }
     } catch (error) {
       console.error('获取钱包列表失败:', error);
@@ -297,6 +306,44 @@ export default function Home() {
     if (success) {
       setCopiedAddress(address);
       setTimeout(() => setCopiedAddress(null), 2000);
+    }
+  };
+
+  // 切换关注状态
+  const handleToggleStar = async (wallet: Wallet) => {
+    setUpdatingStar(wallet.address);
+    try {
+      const response = await fetch(`/api/wallets/${wallet.address}/star`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ isStarred: !wallet.isStarred }),
+      });
+
+      const data = await response.json();
+      if (data.success) {
+        // 更新本地状态并重新排序
+        const updatedWallets = wallets.map(w => 
+          w.id === wallet.id 
+            ? { ...w, isStarred: !w.isStarred }
+            : w
+        ).sort((a, b) => {
+          // 关注的钱包排在前面
+          if (a.isStarred !== b.isStarred) {
+            return a.isStarred ? -1 : 1;
+          }
+          // 然后按创建时间倒序
+          return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+        });
+        setWallets(updatedWallets);
+      } else {
+        console.error('切换关注状态失败:', data.error);
+      }
+    } catch (error) {
+      console.error('切换关注状态失败:', error);
+    } finally {
+      setUpdatingStar(null);
     }
   };
 
@@ -600,6 +647,7 @@ export default function Home() {
           <Table>
             <TableHeader>
               <TableRow>
+                <TableHead className="w-12">关注</TableHead>
                 <TableHead>钱包地址</TableHead>
                 <TableHead>发现时间</TableHead>
                 <TableHead>风险评分</TableHead>
@@ -611,6 +659,20 @@ export default function Home() {
             <TableBody>
               {wallets.map((wallet) => (
                 <TableRow key={wallet.id}>
+                  <TableCell>
+                    <button
+                      onClick={() => handleToggleStar(wallet)}
+                      disabled={updatingStar === wallet.address}
+                      className={`text-xl transition-colors ${
+                        wallet.isStarred
+                          ? 'text-yellow-500 hover:text-yellow-600'
+                          : 'text-gray-300 hover:text-yellow-400'
+                      } ${updatingStar === wallet.address ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+                      title={wallet.isStarred ? '取消关注' : '关注'}
+                    >
+                      {wallet.isStarred ? '★' : '☆'}
+                    </button>
+                  </TableCell>
                   <TableCell>
                     <div className="flex items-center gap-2">
                       <button

@@ -7,10 +7,11 @@ import { supabase, TABLES } from '@/lib/supabase';
  */
 export async function GET() {
   try {
-    // 获取所有钱包，按创建时间倒序
+    // 获取所有钱包，先按关注状态排序（关注在前），再按创建时间倒序
     const { data: wallets, error: walletsError } = await supabase
       .from(TABLES.MONITORED_WALLETS)
       .select('*')
+      .order('isStarred', { ascending: false })
       .order('createdAt', { ascending: false });
 
     if (walletsError) {
@@ -81,6 +82,7 @@ export async function GET() {
         walletCreatedAt: wallet.walletCreatedAt || null, // 钱包在链上的创建时间
         lastActiveAt: wallet.lastActiveAt || null,
         updatedAt: wallet.updatedAt,
+        isStarred: wallet.isStarred || false, // 是否关注
         firstTradeTime: firstTrade?.timestamp || null,
         markets: uniqueMarkets,
         tradeCount: walletTrades.length,
