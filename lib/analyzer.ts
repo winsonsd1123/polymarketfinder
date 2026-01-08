@@ -606,12 +606,12 @@ export async function analyzeWallet(
     }
 
     // 判断是否可疑（总分 >= 50 视为可疑）
-    // 但是，如果交易金额 < 1000，即使分数再高也不标记为可疑
+    // 但是，如果交易金额 < 5000，即使分数再高也不标记为可疑
     let isSuspicious = score >= 50;
     
-    if (currentTradeAmount !== undefined && currentTradeAmount < 1000) {
+    if (currentTradeAmount !== undefined && currentTradeAmount < 5000) {
       isSuspicious = false;
-      details.push(`交易金额过小（$${currentTradeAmount.toFixed(2)} < $1000），解除可疑标记`);
+      details.push(`交易金额过小（$${currentTradeAmount.toFixed(2)} < $5000），解除可疑标记`);
     }
 
     return {
