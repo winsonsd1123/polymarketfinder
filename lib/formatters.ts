@@ -1,4 +1,4 @@
-import { formatDistanceToNow } from 'date-fns';
+import { formatDistanceToNow, format } from 'date-fns';
 import { zhCN } from 'date-fns/locale';
 import { fromBeijingTime } from './time-utils';
 
@@ -26,6 +26,43 @@ export function formatRelativeTime(date: string | Date): string {
       addSuffix: true,
       locale: zhCN,
     });
+  } catch (error) {
+    return '未知时间';
+  }
+}
+
+/**
+ * 格式化具体时间（如 "2026-01-07 15:30:00"）
+ * 注意：数据库中存储的是北京时间（UTC+8），需要转换后显示
+ */
+export function formatDateTime(date: string | Date): string {
+  try {
+    // 如果是从数据库读取的字符串，需要从北京时间转换
+    const dateObj = typeof date === 'string' 
+      ? fromBeijingTime(date) 
+      : date;
+    return format(dateObj, 'yyyy-MM-dd HH:mm:ss', { locale: zhCN });
+  } catch (error) {
+    return '未知时间';
+  }
+}
+
+/**
+ * 格式化时间和相对时间（同时显示具体时间和相对时间）
+ * 格式：2026-01-07 15:30:00 (2小时前)
+ * 注意：数据库中存储的是北京时间（UTC+8），需要转换后显示
+ */
+export function formatTimeWithRelative(date: string | Date): string {
+  try {
+    const dateObj = typeof date === 'string' 
+      ? fromBeijingTime(date) 
+      : date;
+    const dateTimeStr = format(dateObj, 'yyyy-MM-dd HH:mm:ss', { locale: zhCN });
+    const relativeStr = formatDistanceToNow(dateObj, {
+      addSuffix: true,
+      locale: zhCN,
+    });
+    return `${dateTimeStr} (${relativeStr})`;
   } catch (error) {
     return '未知时间';
   }

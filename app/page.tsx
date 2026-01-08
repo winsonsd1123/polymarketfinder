@@ -13,6 +13,7 @@ import { Button } from '@/components/ui/button';
 import {
   formatAddress,
   formatRelativeTime,
+  formatTimeWithRelative,
   calculateWcTxGap,
   getRiskScoreColor,
   copyToClipboard,
@@ -305,7 +306,7 @@ export default function Home() {
               >
                 <div>
                   <span className="font-medium">
-                    {formatRelativeTime(log.completedAt || log.startedAt)}
+                    {formatTimeWithRelative(log.completedAt || log.startedAt)}
                   </span>
                   <span className="ml-2 text-muted-foreground">
                     · {log.totalTrades} 交易 · {log.processedWallets} 钱包
@@ -380,7 +381,7 @@ export default function Home() {
                         {history.totalScore} 分
                       </div>
                       <div className="text-xs text-muted-foreground">
-                        {formatRelativeTime(history.analyzedAt)}
+                        {formatTimeWithRelative(history.analyzedAt)}
                       </div>
                     </div>
                   </div>
@@ -401,7 +402,7 @@ export default function Home() {
                       <div>
                         <span className="text-muted-foreground">钱包创建: </span>
                         <span className="font-medium text-xs">
-                          {formatRelativeTime(history.walletCreatedAt)}
+                          {formatTimeWithRelative(history.walletCreatedAt)}
                         </span>
                       </div>
                     )}
@@ -603,13 +604,13 @@ export default function Home() {
               </div>
               <div className="bg-white rounded-lg p-4 border border-gray-200">
                 <p className="text-sm font-medium text-gray-500 mb-2">发现时间</p>
-                <p className="text-xl font-semibold text-gray-900">{formatRelativeTime(selectedWallet.createdAt)}</p>
+                <p className="text-xl font-semibold text-gray-900">{formatTimeWithRelative(selectedWallet.createdAt)}</p>
               </div>
               <div className="bg-white rounded-lg p-4 border border-gray-200">
                 <p className="text-sm font-medium text-gray-500 mb-2">钱包创建时间</p>
                 <p className="text-xl font-semibold text-gray-900">
                   {selectedWallet.walletCreatedAt
-                    ? formatRelativeTime(selectedWallet.walletCreatedAt)
+                    ? formatTimeWithRelative(selectedWallet.walletCreatedAt)
                     : '未知'}
                 </p>
               </div>
@@ -641,7 +642,7 @@ export default function Home() {
                       {walletTrades.map((trade) => (
                         <TableRow key={trade.id} className="hover:bg-gray-50">
                           <TableCell className="text-base font-medium text-gray-700">
-                            {formatRelativeTime(trade.timestamp)}
+                            {formatTimeWithRelative(trade.timestamp)}
                           </TableCell>
                           <TableCell>
                             <div className="max-w-lg">

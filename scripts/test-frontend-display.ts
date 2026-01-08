@@ -126,3 +126,4 @@ FROM monitored_wallets
 WHERE address = '0xd3398fb000080c5542f531fcb8c5dbea190d2535';
 `);
 
+
