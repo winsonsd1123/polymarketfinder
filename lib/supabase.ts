@@ -115,4 +115,3 @@ export interface WalletAnalysisHistory {
   analyzedAt: string;
   createdAt: string;
 }
-

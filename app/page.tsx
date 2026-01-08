@@ -18,6 +18,7 @@ import {
   getRiskScoreColor,
   copyToClipboard,
 } from '@/lib/formatters';
+import { Progress } from '@/components/ui/progress';
 
 interface Wallet {
   id: number; // bigint
@@ -99,6 +100,8 @@ export default function Home() {
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [historySearchAddress, setHistorySearchAddress] = useState('');
   const [showHistory, setShowHistory] = useState(false);
+  const [refreshProgress, setRefreshProgress] = useState(0);
+  const [refreshStatus, setRefreshStatus] = useState<string>('');
 
   // 获取钱包列表
   const fetchWallets = async () => {
@@ -167,23 +170,124 @@ export default function Home() {
   // 刷新数据（触发扫描并重新获取）
   const handleRefresh = async () => {
     setRefreshing(true);
+    setRefreshProgress(0);
+    setRefreshStatus('正在启动扫描...');
+    
+    let pollInterval: NodeJS.Timeout | null = null;
+    let scanCompleted = false;
+    
     try {
-      // 先触发扫描
-      const scanResponse = await fetch('/api/cron/scan', {
+      // 记录扫描开始时间
+      const scanStartTime = Date.now();
+      
+      // 先触发扫描（异步执行，不等待完成）
+      const scanPromise = fetch('/api/cron/scan', {
         method: 'GET',
       });
-      const scanData = await scanResponse.json();
-      console.log('扫描结果:', scanData);
 
-      // 等待一下再获取最新数据
-      await new Promise((resolve) => setTimeout(resolve, 1000));
+      // 轮询扫描日志来获取进度
+      pollInterval = setInterval(async () => {
+        if (scanCompleted) return;
+        
+        try {
+          const logsResponse = await fetch('/api/scan-logs?limit=1');
+          const logsData = await logsResponse.json();
+          
+          if (logsData.success && logsData.data && logsData.data.length > 0) {
+            const latestLog = logsData.data[0];
+            
+            // 如果扫描已完成
+            if (latestLog.completedAt) {
+              if (pollInterval) {
+                clearInterval(pollInterval);
+                pollInterval = null;
+              }
+              scanCompleted = true;
+              
+              setRefreshProgress(100);
+              setRefreshStatus('扫描完成，正在更新数据...');
+              
+              // 等待一下再获取最新数据
+              await new Promise((resolve) => setTimeout(resolve, 500));
+              
+              // 重新获取钱包列表和扫描日志
+              await Promise.all([fetchWallets(), fetchScanLogs()]);
+              
+              setRefreshStatus('完成');
+              setTimeout(() => {
+                setRefreshProgress(0);
+                setRefreshStatus('');
+                setRefreshing(false);
+              }, 1000);
+            } else {
+              // 扫描进行中，更新进度
+              const elapsed = Date.now() - scanStartTime;
+              // 估算进度：假设扫描需要 30-60 秒，根据已用时间估算
+              const estimatedDuration = 45000; // 45秒
+              const progress = Math.min(90, Math.floor((elapsed / estimatedDuration) * 90));
+              setRefreshProgress(progress);
+              
+              if (latestLog.totalTrades > 0) {
+                setRefreshStatus(`正在处理 ${latestLog.totalTrades} 笔交易...`);
+              } else {
+                setRefreshStatus('正在获取交易数据...');
+              }
+            }
+          }
+        } catch (error) {
+          console.error('轮询扫描日志失败:', error);
+        }
+      }, 1000); // 每秒轮询一次
 
-      // 重新获取钱包列表和扫描日志
-      await Promise.all([fetchWallets(), fetchScanLogs()]);
+      // 等待扫描完成（作为备用，如果轮询没有检测到完成）
+      try {
+        const scanResponse = await scanPromise;
+        const scanData = await scanResponse.json();
+        console.log('扫描结果:', scanData);
+
+        // 如果轮询还没有检测到完成，手动处理
+        if (!scanCompleted) {
+          if (pollInterval) {
+            clearInterval(pollInterval);
+            pollInterval = null;
+          }
+          scanCompleted = true;
+          
+          setRefreshProgress(100);
+          setRefreshStatus('扫描完成，正在更新数据...');
+
+          // 等待一下再获取最新数据
+          await new Promise((resolve) => setTimeout(resolve, 500));
+
+          // 重新获取钱包列表和扫描日志
+          await Promise.all([fetchWallets(), fetchScanLogs()]);
+          
+          setRefreshStatus('完成');
+          setTimeout(() => {
+            setRefreshProgress(0);
+            setRefreshStatus('');
+            setRefreshing(false);
+          }, 1000);
+        }
+      } catch (scanError) {
+        // 扫描请求失败
+        if (pollInterval) {
+          clearInterval(pollInterval);
+          pollInterval = null;
+        }
+        throw scanError;
+      }
     } catch (error) {
       console.error('刷新失败:', error);
-    } finally {
-      setRefreshing(false);
+      if (pollInterval) {
+        clearInterval(pollInterval);
+      }
+      setRefreshStatus('扫描失败');
+      setTimeout(() => {
+        setRefreshProgress(0);
+        setRefreshStatus('');
+        setRefreshing(false);
+      }, 2000);
     }
   };
 
@@ -258,6 +362,17 @@ export default function Home() {
           </Button>
         </div>
       </div>
+
+      {/* 刷新进度条 */}
+      {refreshing && (
+        <div className="mb-6 rounded-lg border bg-card p-4">
+          <div className="mb-2 flex items-center justify-between">
+            <span className="text-sm font-medium">{refreshStatus || '正在扫描...'}</span>
+            <span className="text-sm text-muted-foreground">{refreshProgress}%</span>
+          </div>
+          <Progress value={refreshProgress} className="h-2" />
+        </div>
+      )}
 
       {/* 扫描统计信息 */}
       {latestScan && (
