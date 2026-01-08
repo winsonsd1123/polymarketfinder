@@ -1,6 +1,7 @@
 import { createPublicClient, http, Address, PublicClient } from 'viem';
 import { polygon } from 'viem/chains';
 import { supabase, TABLES } from './supabase';
+import type { PolymarketTrade } from './polymarket';
 
 /**
  * 钱包分析结果
@@ -414,16 +415,16 @@ async function getFundingSource(
 /**
  * 分析钱包是否为可疑钱包
  * @param address 钱包地址
- * @param currentTradeAmount 当前交易的金额（USDC），用于检查单笔交易规模
- * @param currentTradeTime 当前交易的时间戳，用于检查交易发生时间
- * @param currentMarketId 当前交易的市场ID，用于计算市场参与度
+ * @param currentTrades 本次扫描中该钱包的所有交易记录
+ * @param currentTradeAmount 当前交易的金额（USDC），用于检查单笔交易规模（使用第一笔交易的金额）
+ * @param currentTradeTime 当前交易的时间戳，用于检查交易发生时间（使用第一笔交易的时间）
  * @returns 分析结果
  */
 export async function analyzeWallet(
   address: string,
+  currentTrades: PolymarketTrade[],
   currentTradeAmount?: number,
-  currentTradeTime?: Date,
-  currentMarketId?: string
+  currentTradeTime?: Date
 ): Promise<WalletAnalysisResult> {
   let score = 0;
   const details: string[] = [];
@@ -490,67 +491,90 @@ export async function analyzeWallet(
     }
 
     // 3. 检查市场参与度（< 3个市场，+20分）
-    // 注意：需要同时考虑数据库中的历史记录和当前交易的市场
-    let marketCount = await getMarketParticipationCount(address);
+    // 需要合并数据库中的历史记录和本次扫描的交易记录
+    const dbMarketCount = await getMarketParticipationCount(address);
     
-    // 如果当前交易有市场ID，且数据库中还没有这个市场的记录，需要加1
-    if (currentMarketId) {
-      // 检查当前市场是否已经在数据库中
-      const { data: wallet } = await supabase
-        .from(TABLES.MONITORED_WALLETS)
-        .select('id')
-        .eq('address', address.toLowerCase())
-        .single();
-      
-      if (wallet) {
+    // 统计本次扫描中该钱包参与的不同市场
+    const currentScanMarkets = new Set<string>();
+    for (const trade of currentTrades) {
+      if (trade.asset_id) {
+        currentScanMarkets.add(trade.asset_id);
+      }
+    }
+    
+    // 如果钱包已存在于数据库中，需要检查本次扫描的市场是否已经在数据库中记录过
+    const { data: existingWallet } = await supabase
+      .from(TABLES.MONITORED_WALLETS)
+      .select('id')
+      .eq('address', address.toLowerCase())
+      .single();
+    
+    let newMarketsFromScan = 0;
+    if (existingWallet) {
+      // 钱包已存在，检查本次扫描的市场中哪些是新的
+      for (const marketId of currentScanMarkets) {
         const { data: existingTrade } = await supabase
           .from(TABLES.TRADE_EVENTS)
           .select('marketId')
-          .eq('walletId', wallet.id)
-          .eq('marketId', currentMarketId)
+          .eq('walletId', existingWallet.id)
+          .eq('marketId', marketId)
           .limit(1)
           .single();
         
-        // 如果当前市场不在数据库中，说明这是新市场，需要加1
+        // 如果这个市场在数据库中不存在，说明是本次扫描新增的
         if (!existingTrade) {
-          marketCount += 1;
+          newMarketsFromScan++;
         }
-      } else {
-        // 钱包不在数据库中，说明这是第一笔交易，当前市场算作1个
-        marketCount = 1;
       }
+    } else {
+      // 钱包不存在于数据库中，本次扫描的所有市场都是新的
+      newMarketsFromScan = currentScanMarkets.size;
     }
     
-    checks.marketParticipation.marketCount = marketCount;
+    // 总市场数 = 数据库中的市场数 + 本次扫描新增的市场数
+    const totalMarketCount = dbMarketCount + newMarketsFromScan;
+    
+    checks.marketParticipation.marketCount = totalMarketCount;
 
-    // 修复：marketCount = 0 或 1 或 2 都应该加分（< 3个市场）
-    if (marketCount < 3) {
+    // 修复：totalMarketCount = 0 或 1 或 2 都应该加分（< 3个市场）
+    if (totalMarketCount < 3) {
       score += 20;
       checks.marketParticipation.score = 20;
       checks.marketParticipation.passed = true;
-      if (marketCount === 0) {
+      if (totalMarketCount === 0) {
         details.push(`参与市场数量为 0（新钱包，仅当前交易），风险分 +20`);
       } else {
-        details.push(`参与市场数量少于 3 个（${marketCount} 个），风险分 +20`);
+        const detailMsg = dbMarketCount > 0 
+          ? `参与市场数量少于 3 个（总计 ${totalMarketCount} 个：数据库 ${dbMarketCount} 个 + 本次扫描 ${newMarketsFromScan} 个），风险分 +20`
+          : `参与市场数量少于 3 个（${totalMarketCount} 个），风险分 +20`;
+        details.push(detailMsg);
       }
     } else {
-      details.push(`参与市场数量 >= 3 个（${marketCount} 个）`);
+      const detailMsg = dbMarketCount > 0
+        ? `参与市场数量 >= 3 个（总计 ${totalMarketCount} 个：数据库 ${dbMarketCount} 个 + 本次扫描 ${newMarketsFromScan} 个）`
+        : `参与市场数量 >= 3 个（${totalMarketCount} 个）`;
+      details.push(detailMsg);
     }
 
     // 4. 检查单笔交易规模（> $10,000，+10分）- 截图规则
-    if (currentTradeAmount !== undefined && currentTradeAmount > 10000) {
+    // 使用本次扫描中最大单笔交易金额
+    const maxTradeAmount = currentTrades.length > 0 
+      ? Math.max(...currentTrades.map(t => t.amount_usdc))
+      : (currentTradeAmount || 0);
+    
+    if (maxTradeAmount > 10000) {
       score += 10;
       checks.transactionAmount = {
         passed: true,
         score: 10,
-        amount: currentTradeAmount,
+        amount: maxTradeAmount,
       };
-      details.push(`单笔交易规模超过 1 万美元（$${currentTradeAmount.toFixed(2)}），风险分 +10`);
-    } else if (currentTradeAmount !== undefined) {
+      details.push(`单笔交易规模超过 1 万美元（$${maxTradeAmount.toFixed(2)}），风险分 +10`);
+    } else if (maxTradeAmount > 0) {
       checks.transactionAmount = {
         passed: false,
         score: 0,
-        amount: currentTradeAmount,
+        amount: maxTradeAmount,
       };
     }
 
@@ -606,12 +630,16 @@ export async function analyzeWallet(
     }
 
     // 判断是否可疑（总分 >= 50 视为可疑）
-    // 但是，如果交易金额 < 5000，即使分数再高也不标记为可疑
+    // 但是，如果最大交易金额 < 5000，即使分数再高也不标记为可疑
     let isSuspicious = score >= 50;
     
-    if (currentTradeAmount !== undefined && currentTradeAmount < 5000) {
+    const maxAmount = currentTrades.length > 0 
+      ? Math.max(...currentTrades.map(t => t.amount_usdc))
+      : (currentTradeAmount || 0);
+    
+    if (maxAmount > 0 && maxAmount < 5000) {
       isSuspicious = false;
-      details.push(`交易金额过小（$${currentTradeAmount.toFixed(2)} < $5000），解除可疑标记`);
+      details.push(`交易金额过小（$${maxAmount.toFixed(2)} < $5000），解除可疑标记`);
     }
 
     return {

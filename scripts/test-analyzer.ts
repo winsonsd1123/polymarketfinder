@@ -23,7 +23,8 @@ async function testAnalyzer() {
     console.log(`📋 分析钱包: ${address}\n`);
 
     try {
-      const result = await analyzeWallet(address);
+      // 测试时传入空交易数组（因为这是独立测试，不涉及扫描）
+      const result = await analyzeWallet(address, []);
 
       console.log('📊 分析结果:');
       console.log(`  是否可疑: ${result.isSuspicious ? '✅ 是' : '❌ 否'}`);

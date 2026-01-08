@@ -24,10 +24,12 @@ interface ScanResult {
 
 /**
  * 处理单个钱包的分析和入库
+ * @param address 钱包地址
+ * @param trades 本次扫描中该钱包的所有交易记录
  */
 async function processWallet(
   address: string,
-  trade: PolymarketTrade
+  trades: PolymarketTrade[]
 ): Promise<{ success: boolean; isNew: boolean; isSuspicious: boolean; error?: string; shouldStop?: boolean }> {
   try {
     const normalizedAddress = address.toLowerCase();
@@ -48,17 +50,18 @@ async function processWallet(
       return { success: true, isNew: false, isSuspicious: false };
     }
 
-    // 新钱包，进行分析（传入当前交易信息）
+    // 新钱包，进行分析（传入本次扫描中该钱包的所有交易）
     // 【验证模式】如果 Alchemy API 查不到钱包创建时间，会抛出错误
-    // 使用 parseToUTCDate 确保在 Vercel（UTC）和本地（UTC+8）环境下都能正确解析
-    const currentTradeTime = parseToUTCDate(trade.timestamp);
+    // 使用第一笔交易的时间作为当前交易时间（用于计算交易时间相关评分）
+    const firstTrade = trades[0];
+    const currentTradeTime = parseToUTCDate(firstTrade.timestamp);
     let analysis;
     try {
       analysis = await analyzeWallet(
         normalizedAddress,
-        trade.amount_usdc,
-        currentTradeTime,
-        trade.asset_id // 传入当前交易的市场ID，用于计算市场参与度
+        trades, // 传入本次扫描中该钱包的所有交易
+        firstTrade.amount_usdc, // 使用第一笔交易的金额
+        currentTradeTime
       );
     } catch (error) {
       // 检查是否是验证模式的错误（Alchemy API 失败）
@@ -135,8 +138,10 @@ async function processWallet(
 
     // 如果可疑（score >= 50），存入数据库（按照截图规则，重点关注新钱包和市场参与度）
     if (analysis.isSuspicious && analysis.score >= 50) {
-      // 确保市场存在（使用 asset_id 作为 market id）
-      const marketId = trade.asset_id;
+      // 处理所有交易，确保市场和交易事件都被记录
+      // 使用第一笔交易的市场ID作为主要市场
+      const firstTrade = trades[0];
+      const marketId = firstTrade.asset_id;
       
       // 检查市场是否存在
       const { data: existingMarket } = await supabase
@@ -145,16 +150,19 @@ async function processWallet(
         .eq('id', marketId)
         .single();
 
+      // 统计所有交易的总金额（用于市场交易量）
+      const totalAmount = trades.reduce((sum, t) => sum + t.amount_usdc, 0);
+      
       if (!existingMarket) {
         // 创建新市场（使用 API 返回的标题，如果没有则使用 ID，使用北京时间）
-        const marketTitle = (trade as any).title || `Market ${marketId.substring(0, 20)}...`;
+        const marketTitle = (firstTrade as any).title || `Market ${marketId.substring(0, 20)}...`;
         const beijingNow = getBeijingTime();
         const { error: marketError } = await supabase
           .from(TABLES.MARKETS)
           .insert({
             id: marketId,
             title: marketTitle,
-            volume: trade.amount_usdc,
+            volume: totalAmount,
             createdAt: beijingNow, // 显式设置创建时间为北京时间
             updatedAt: beijingNow, // 显式设置更新时间为北京时间
           });
@@ -167,10 +175,52 @@ async function processWallet(
         await supabase
           .from(TABLES.MARKETS)
           .update({ 
-            volume: existingMarket.volume + trade.amount_usdc,
+            volume: existingMarket.volume + totalAmount,
             updatedAt: getBeijingTime(), // 显式设置更新时间为北京时间
           })
           .eq('id', marketId);
+      }
+      
+      // 处理所有交易涉及的市场（确保所有市场都被创建）
+      const uniqueMarkets = new Map<string, PolymarketTrade>();
+      for (const t of trades) {
+        if (!uniqueMarkets.has(t.asset_id)) {
+          uniqueMarkets.set(t.asset_id, t);
+        }
+      }
+      
+      // 为每个唯一市场创建或更新记录
+      for (const [marketIdKey, marketTrade] of uniqueMarkets.entries()) {
+        if (marketIdKey === marketId) continue; // 已经处理过了
+        
+        const { data: market } = await supabase
+          .from(TABLES.MARKETS)
+          .select('id, volume')
+          .eq('id', marketIdKey)
+          .single();
+        
+        if (!market) {
+          const marketTitle = (marketTrade as any).title || `Market ${marketIdKey.substring(0, 20)}...`;
+          const marketAmount = trades.filter(t => t.asset_id === marketIdKey).reduce((sum, t) => sum + t.amount_usdc, 0);
+          await supabase
+            .from(TABLES.MARKETS)
+            .insert({
+              id: marketIdKey,
+              title: marketTitle,
+              volume: marketAmount,
+              createdAt: getBeijingTime(),
+              updatedAt: getBeijingTime(),
+            });
+        } else {
+          const marketAmount = trades.filter(t => t.asset_id === marketIdKey).reduce((sum, t) => sum + t.amount_usdc, 0);
+          await supabase
+            .from(TABLES.MARKETS)
+            .update({ 
+              volume: market.volume + marketAmount,
+              updatedAt: getBeijingTime(),
+            })
+            .eq('id', marketIdKey);
+        }
       }
 
       // 创建监控钱包（使用北京时间）
@@ -200,29 +250,37 @@ async function processWallet(
         return { success: false, isNew: true, isSuspicious: true, error: walletError?.message };
       }
 
-      // 从交易数据中获取方向（Data API 返回 side 字段：BUY 或 SELL）
-      const isBuy = (trade as any).side === 'BUY' || (trade as any).side !== 'SELL';
-      
-      // 获取 outcome (YES/NO)
-      const outcome = trade.outcome || null;
+      // 为所有交易创建交易事件记录
+      const tradeEvents = trades.map(trade => {
+        // 从交易数据中获取方向（Data API 返回 side 字段：BUY 或 SELL）
+        const isBuy = (trade as any).side === 'BUY' || (trade as any).side !== 'SELL';
+        
+        // 获取 outcome (YES/NO)
+        const outcome = trade.outcome || null;
 
-      // 创建交易事件（交易时间转换为北京时间）
-      // 使用 parseToUTCDate 确保在 Vercel（UTC）和本地（UTC+8）环境下都能正确解析
-      const tradeBeijingTime = toBeijingTime(parseToUTCDate(trade.timestamp));
-      const { error: tradeError } = await supabase
-        .from(TABLES.TRADE_EVENTS)
-        .insert({
-          marketId: marketId,
+        // 交易时间转换为北京时间
+        const tradeBeijingTime = toBeijingTime(parseToUTCDate(trade.timestamp));
+        
+        return {
+          marketId: trade.asset_id,
           walletId: wallet.id,
           amount: trade.amount_usdc,
           isBuy: isBuy,
           outcome: outcome, // YES 或 NO
           timestamp: tradeBeijingTime,
           createdAt: getBeijingTime(), // 显式设置创建时间为北京时间
-        });
+        };
+      });
+
+      // 批量插入交易事件
+      const { error: tradeError } = await supabase
+        .from(TABLES.TRADE_EVENTS)
+        .insert(tradeEvents);
 
       if (tradeError) {
         console.error('创建交易事件失败:', tradeError);
+      } else {
+        console.log(`✅ 为钱包 ${normalizedAddress} 创建了 ${tradeEvents.length} 条交易事件记录`);
       }
 
       return { success: true, isNew: true, isSuspicious: true };
@@ -326,22 +384,29 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    // 2. 去重钱包地址（同一地址可能有多笔交易）
-    const uniqueWallets = new Map<string, PolymarketTrade>();
+    // 2. 按钱包地址分组交易（保留每个钱包的所有交易记录）
+    const walletTradesMap = new Map<string, PolymarketTrade[]>();
     for (const trade of trades) {
       const address = trade.maker_address.toLowerCase();
-      if (!uniqueWallets.has(address)) {
-        uniqueWallets.set(address, trade);
+      if (!walletTradesMap.has(address)) {
+        walletTradesMap.set(address, []);
       }
+      walletTradesMap.get(address)!.push(trade);
     }
 
-    console.log(`📊 发现 ${uniqueWallets.size} 个唯一钱包地址`);
+    console.log(`📊 发现 ${walletTradesMap.size} 个唯一钱包地址`);
+    // 打印每个钱包的交易数量统计
+    const walletStats = Array.from(walletTradesMap.entries()).map(([addr, trades]) => ({
+      address: addr,
+      tradeCount: trades.length,
+    }));
+    console.log(`📊 钱包交易统计: ${walletStats.slice(0, 10).map(s => `${s.address.substring(0, 8)}...(${s.tradeCount}笔)`).join(', ')}${walletStats.length > 10 ? '...' : ''}`);
 
     // 3. 使用 p-limit 控制并发处理钱包
     const limitConcurrency = pLimit(concurrency);
-    const processPromises = Array.from(uniqueWallets.entries()).map(([address, trade]) =>
+    const processPromises = Array.from(walletTradesMap.entries()).map(([address, walletTrades]) =>
       limitConcurrency(async () => {
-        const processResult = await processWallet(address, trade);
+        const processResult = await processWallet(address, walletTrades);
         result.processedWallets++;
 
         if (!processResult.success) {
