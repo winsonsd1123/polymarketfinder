@@ -24,12 +24,13 @@ export async function PATCH(
       );
     }
 
-    // 更新关注状态和更新时间（使用数据库列名 snake_case）
+    // 更新关注状态（数据库表中可能没有 updated_at 列，所以只更新 is_starred）
     const { data, error } = await supabase
       .from(TABLES.MONITORED_WALLETS)
       .update({ 
         is_starred: isStarred,
-        updated_at: getBeijingTime(), // 更新修改时间
+        // 注意：如果数据库表中有 updated_at 列，可以取消下面的注释
+        // updated_at: getBeijingTime(),
       })
       .eq('address', normalizedAddress)
       .select()
