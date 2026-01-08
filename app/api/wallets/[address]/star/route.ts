@@ -24,12 +24,12 @@ export async function PATCH(
       );
     }
 
-    // 更新关注状态和更新时间
+    // 更新关注状态和更新时间（使用数据库列名 snake_case）
     const { data, error } = await supabase
       .from(TABLES.MONITORED_WALLETS)
       .update({ 
-        isStarred,
-        updatedAt: getBeijingTime(), // 更新修改时间
+        is_starred: isStarred,
+        updated_at: getBeijingTime(), // 更新修改时间
       })
       .eq('address', normalizedAddress)
       .select()
@@ -39,9 +39,13 @@ export async function PATCH(
       throw error;
     }
 
+    // 转换返回数据为 camelCase 格式（is_starred 是 snake_case，其他字段是 camelCase）
     return NextResponse.json({
       success: true,
-      data,
+      data: {
+        ...data,
+        isStarred: data.is_starred || false,
+      },
     });
   } catch (error) {
     console.error('更新关注状态失败:', error);

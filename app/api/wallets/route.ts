@@ -11,7 +11,7 @@ export async function GET() {
     const { data: wallets, error: walletsError } = await supabase
       .from(TABLES.MONITORED_WALLETS)
       .select('*')
-      .order('isStarred', { ascending: false })
+      .order('is_starred', { ascending: false })
       .order('createdAt', { ascending: false });
 
     if (walletsError) {
@@ -79,10 +79,10 @@ export async function GET() {
         riskScore: wallet.riskScore,
         fundingSource: wallet.fundingSource,
         createdAt: wallet.createdAt,
-        walletCreatedAt: wallet.walletCreatedAt || null, // 钱包在链上的创建时间
+        walletCreatedAt: wallet.walletCreatedAt || null,
         lastActiveAt: wallet.lastActiveAt || null,
         updatedAt: wallet.updatedAt,
-        isStarred: wallet.isStarred || false, // 是否关注
+        isStarred: wallet.is_starred || false, // 是否关注（数据库列名是 is_starred）
         firstTradeTime: firstTrade?.timestamp || null,
         markets: uniqueMarkets,
         tradeCount: walletTrades.length,
