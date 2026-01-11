@@ -41,24 +41,88 @@ export async function GET(request: NextRequest) {
           .eq('address', alert.wallet_address)
           .single();
 
+        // 查询已结算持仓数（用于计算胜率的持仓数）
+        let totalPositions = 0;
+        if (wallet) {
+          const { data: winRateData } = await supabase
+            .from(TABLES.WALLET_WIN_RATES)
+            .select('total_positions')
+            .eq('wallet_address', alert.wallet_address)
+            .single();
+          
+          totalPositions = winRateData?.total_positions || 0;
+        }
+
         // 查询该钱包在当次扫描中的交易记录（仅当次扫描检测到的交易）
         // 注意：胜率分析基于钱包的所有历史已结算持仓，但交易提醒只显示当次扫描的交易
         let trades: any[] = [];
-        if (wallet && alert.scan_log_id) {
-          // 通过 scan_log_id 查询扫描日志的时间范围
-          const { data: scanLog } = await supabase
-            .from(TABLES.SCAN_LOGS)
-            .select('started_at, completed_at')
-            .eq('id', alert.scan_log_id)
-            .single();
+        if (wallet) {
+          // 优先使用时间范围查询（如果有 scan_log_id）
+          if (alert.scan_log_id) {
+            // 通过 scan_log_id 查询扫描日志的时间范围
+            const { data: scanLog } = await supabase
+              .from(TABLES.SCAN_LOGS)
+              .select('started_at, completed_at')
+              .eq('id', alert.scan_log_id)
+              .single();
 
-          if (scanLog) {
-            // 确定扫描的时间范围：从扫描开始到检测时间（或扫描完成时间）
-            const scanStartTime = scanLog.started_at;
-            const scanEndTime = scanLog.completed_at || alert.detected_at;
-            
-            // 查询该钱包在这个时间范围内的交易（当次扫描的交易）
-            const { data: tradeEvents } = await supabase
+            if (scanLog && scanLog.started_at) {
+              // 确定扫描的时间范围：从扫描开始到检测时间（或扫描完成时间）
+              const scanStartTime = scanLog.started_at;
+              const scanEndTime = scanLog.completed_at || alert.detected_at;
+              
+              // 查询该钱包在这个时间范围内的交易（当次扫描的交易）
+              const { data: tradeEvents, error: tradeError } = await supabase
+                .from(TABLES.TRADE_EVENTS)
+                .select(`
+                  id,
+                  marketId,
+                  amount,
+                  isBuy,
+                  outcome,
+                  timestamp,
+                  markets:marketId (
+                    id,
+                    title
+                  )
+                `)
+                .eq('walletId', wallet.id)
+                .gte('timestamp', scanStartTime)
+                .lte('timestamp', scanEndTime)
+                .order('timestamp', { ascending: false })
+                .limit(alert.trade_count || 10); // 限制为当次扫描的交易数量
+
+              if (!tradeError && tradeEvents) {
+                // 如果关联查询失败，markets 可能是 null 或空对象
+                trades = tradeEvents.map((trade: any) => {
+                  // 处理关联查询结果：trade.markets 可能是对象、数组或 null
+                  let marketTitle = 'Unknown Market';
+                  if (trade.markets) {
+                    if (Array.isArray(trade.markets) && trade.markets.length > 0) {
+                      marketTitle = trade.markets[0].title || marketTitle;
+                    } else if (typeof trade.markets === 'object' && trade.markets.title) {
+                      marketTitle = trade.markets.title;
+                    }
+                  }
+                  
+                  return {
+                    id: trade.id,
+                    marketId: trade.marketId,
+                    marketTitle: marketTitle,
+                    amount: trade.amount,
+                    isBuy: trade.isBuy,
+                    outcome: trade.outcome,
+                    timestamp: trade.timestamp,
+                  };
+                });
+              }
+            }
+          }
+          
+          // 如果时间范围查询没有结果，或者没有 scan_log_id，查询最近的交易
+          if (trades.length === 0) {
+            const limit = alert.trade_count || 10;
+            const { data: tradeEvents, error: tradeError } = await supabase
               .from(TABLES.TRADE_EVENTS)
               .select(`
                 id,
@@ -73,20 +137,33 @@ export async function GET(request: NextRequest) {
                 )
               `)
               .eq('walletId', wallet.id)
-              .gte('timestamp', scanStartTime)
-              .lte('timestamp', scanEndTime)
               .order('timestamp', { ascending: false })
-              .limit(alert.trade_count || 10); // 限制为当次扫描的交易数量
+              .limit(limit);
 
-            trades = (tradeEvents || []).map((trade: any) => ({
-              id: trade.id,
-              marketId: trade.marketId,
-              marketTitle: trade.markets?.title || 'Unknown Market',
-              amount: trade.amount,
-              isBuy: trade.isBuy,
-              outcome: trade.outcome,
-              timestamp: trade.timestamp,
-            }));
+            if (!tradeError && tradeEvents) {
+              // 如果关联查询失败，markets 可能是 null 或空对象
+              trades = tradeEvents.map((trade: any) => {
+                // 处理关联查询结果：trade.markets 可能是对象、数组或 null
+                let marketTitle = 'Unknown Market';
+                if (trade.markets) {
+                  if (Array.isArray(trade.markets) && trade.markets.length > 0) {
+                    marketTitle = trade.markets[0].title || marketTitle;
+                  } else if (typeof trade.markets === 'object' && trade.markets.title) {
+                    marketTitle = trade.markets.title;
+                  }
+                }
+                
+                return {
+                  id: trade.id,
+                  marketId: trade.marketId,
+                  marketTitle: marketTitle,
+                  amount: trade.amount,
+                  isBuy: trade.isBuy,
+                  outcome: trade.outcome,
+                  timestamp: trade.timestamp,
+                };
+              });
+            }
           }
         }
 
@@ -94,7 +171,8 @@ export async function GET(request: NextRequest) {
           id: alert.id,
           walletAddress: alert.wallet_address,
           winRate: alert.win_rate,
-          tradeCount: alert.trade_count,
+          tradeCount: alert.trade_count, // 本次扫描的交易数
+          totalPositions: totalPositions, // 已结算持仓数（用于计算胜率，至少5笔）
           detectedAt: alert.detected_at,
           wallet: wallet ? {
             id: wallet.id,

@@ -6,7 +6,7 @@
  * 使用方法：
  * 1. 直接运行：npm run auto-scan
  * 2. 设置为 cron job（每5分钟运行一次）：
- *    */5 * * * * cd /path/to/project && npm run auto-scan
+ *    */5 /* * * * cd /path/to/project && npm run auto-scan
  * 
  * 环境变量：
  * - SCAN_API_URL: Vercel 部署的 API 地址（必需）
@@ -58,6 +58,7 @@ async function runScan(): Promise<boolean> {
       console.log(`   处理钱包数: ${data.result.processedWallets}`);
       console.log(`   新钱包数: ${data.result.newWallets}`);
       console.log(`   可疑钱包数: ${data.result.suspiciousWallets}`);
+      console.log(`   高胜率钱包数: ${data.result.highWinRateWallets || 0}`);
       console.log(`   耗时: ${data.duration}ms`);
       
       if (data.result.suspiciousWallets > 0) {
@@ -65,6 +66,15 @@ async function runScan(): Promise<boolean> {
         data.result.details.suspiciousWallets.forEach((addr: string) => {
           console.log(`   - ${addr}`);
         });
+      }
+      
+      if (data.result.highWinRateWallets > 0) {
+        console.log(`\n🎯 发现 ${data.result.highWinRateWallets} 个高胜率钱包！`);
+        if (data.result.details.highWinRateWallets) {
+          data.result.details.highWinRateWallets.forEach((addr: string) => {
+            console.log(`   - ${addr}`);
+          });
+        }
       }
       return true;
     } else {

@@ -58,16 +58,77 @@ async function processWallet(
       // 注意：如果钱包不在本次扫描中，不会调用此函数，所以不会更新
       await supabase
         .from(TABLES.MONITORED_WALLETS)
-        .update({ last_active_at: getBeijingTime() })
+        .update({ lastActiveAt: getBeijingTime() })
         .eq('id', existingWallet.id);
+      
+      // 【修复】为已存在的钱包插入本次扫描的交易记录
+      // 检查本次扫描的交易是否已经存在于 trade_events 表中（避免重复插入）
+      if (trades.length > 0) {
+        try {
+          // 查询该钱包最近的交易记录，检查是否有重复
+          const { data: recentTrades } = await supabase
+            .from(TABLES.TRADE_EVENTS)
+            .select('timestamp, amount, marketId')
+            .eq('walletId', existingWallet.id)
+            .order('timestamp', { ascending: false })
+            .limit(10);
+          
+          // 构建交易事件记录
+          const tradeEvents = trades.map(trade => {
+            const isBuy = (trade as any).side === 'BUY' || (trade as any).side !== 'SELL';
+            const outcome = trade.outcome || null;
+            const tradeBeijingTime = toBeijingTime(parseToUTCDate(trade.timestamp));
+            
+            return {
+              marketId: trade.asset_id,
+              walletId: existingWallet.id,
+              amount: trade.amount_usdc,
+              isBuy: isBuy,
+              outcome: outcome,
+              timestamp: tradeBeijingTime,
+              createdAt: getBeijingTime(),
+            };
+          });
+          
+          // 过滤掉可能已存在的交易（基于时间戳和金额的简单去重）
+          const newTradeEvents = tradeEvents.filter(newTrade => {
+            return !recentTrades?.some(existingTrade => 
+              existingTrade.timestamp === newTrade.timestamp &&
+              existingTrade.amount === newTrade.amount &&
+              existingTrade.marketId === newTrade.marketId
+            );
+          });
+          
+          // 只插入新交易
+          if (newTradeEvents.length > 0) {
+            const { error: tradeError } = await supabase
+              .from(TABLES.TRADE_EVENTS)
+              .insert(newTradeEvents);
+            
+            if (tradeError) {
+              console.error(`[已存在钱包] 插入交易事件失败 (${normalizedAddress}):`, tradeError);
+            } else {
+              console.log(`✅ [已存在钱包] 为钱包 ${normalizedAddress} 插入了 ${newTradeEvents.length} 条新交易事件记录`);
+            }
+          }
+        } catch (error) {
+          console.warn(`[已存在钱包] 处理交易记录失败 (${normalizedAddress}):`, error);
+          // 不影响主流程
+        }
+      }
       
       // 路径2：计算胜率（仅对本次扫描中出现的钱包）
       // 胜率分析基于钱包的所有历史已结算持仓，但只对本次扫描中的钱包计算
       // 注意：如果钱包不在本次扫描中，不会调用此函数，所以这里只处理本次扫描中的钱包
       let isHighWinRateWallet = false;
       try {
-        const winRateResult = await calculateWinRate(normalizedAddress);
-        if (winRateResult && winRateResult.totalPositions >= 5) {
+        // 【新增规则】如果本次扫描的交易总金额低于1000，跳过高胜率分析
+        const totalTradeAmount = trades.reduce((sum, t) => sum + t.amount_usdc, 0);
+        if (totalTradeAmount < 1000) {
+          console.log(`[已存在钱包] 钱包 ${normalizedAddress} 本次扫描交易金额 ${totalTradeAmount.toFixed(2)} < 1000，跳过高胜率分析`);
+        } else {
+          const winRateResult = await calculateWinRate(normalizedAddress);
+          if (winRateResult && winRateResult.totalPositions >= 5) {
           // 保存到胜率库
           await saveWinRateToDatabase(normalizedAddress, winRateResult);
           
@@ -128,6 +189,7 @@ async function processWallet(
                 });
             }
           }
+        }
         }
       } catch (error) {
         console.warn(`[路径2] 计算钱包 ${normalizedAddress} 胜率失败:`, error);
@@ -322,13 +384,13 @@ async function processWallet(
         .from(TABLES.MONITORED_WALLETS)
         .insert({
           address: normalizedAddress,
-          risk_score: analysis.score,
-          funding_source: analysis.checks.fundingSource?.sourceAddress || null,
-          last_active_at: beijingNow,
-          wallet_created_at: walletCreatedAtBeijing, // 钱包在链上的创建时间（北京时间）
+          riskScore: analysis.score,
+          fundingSource: analysis.checks.fundingSource?.sourceAddress || null,
+          lastActiveAt: beijingNow,
+          walletCreatedAt: walletCreatedAtBeijing, // 钱包在链上的创建时间（北京时间）
           wallet_type: ['suspicious'], // 可疑钱包类型
-          created_at: beijingNow, // 显式设置创建时间为北京时间
-          updated_at: beijingNow, // 显式设置更新时间为北京时间
+          createdAt: beijingNow, // 显式设置创建时间为北京时间
+          updatedAt: beijingNow, // 显式设置更新时间为北京时间
         })
         .select()
         .single();
@@ -420,8 +482,13 @@ async function processWallet(
     // 路径2：如果不可疑，但可能是高胜率钱包
     let isHighWinRateWallet = false;
     try {
-      const winRateResult = await calculateWinRate(normalizedAddress);
-      if (winRateResult && winRateResult.totalPositions >= 5) {
+      // 【新增规则】如果本次扫描的交易总金额低于1000，跳过高胜率分析
+      const totalTradeAmount = trades.reduce((sum, t) => sum + t.amount_usdc, 0);
+      if (totalTradeAmount < 1000) {
+        console.log(`[新钱包-高胜率] 钱包 ${normalizedAddress} 本次扫描交易金额 ${totalTradeAmount.toFixed(2)} < 1000，跳过高胜率分析`);
+      } else {
+        const winRateResult = await calculateWinRate(normalizedAddress);
+        if (winRateResult && winRateResult.totalPositions >= 5) {
         // 保存到胜率库
         await saveWinRateToDatabase(normalizedAddress, winRateResult);
         
@@ -430,59 +497,78 @@ async function processWallet(
           isHighWinRateWallet = true;
           
           const beijingNow = getBeijingTime();
-          const firstTrade = trades[0];
-          const marketId = firstTrade.asset_id;
           
-          // 确保市场存在
-          const { data: existingMarket } = await supabase
-            .from(TABLES.MARKETS)
-            .select('id, volume')
-            .eq('id', marketId)
-            .single();
+          // 处理所有交易涉及的市场（确保所有市场都被创建）
+          const uniqueMarkets = new Map<string, PolymarketTrade>();
+          for (const t of trades) {
+            if (!uniqueMarkets.has(t.asset_id)) {
+              uniqueMarkets.set(t.asset_id, t);
+            }
+          }
           
-          const totalAmount = trades.reduce((sum, t) => sum + t.amount_usdc, 0);
-          
-          if (!existingMarket) {
-            const marketTitle = (firstTrade as any).title || `Market ${marketId.substring(0, 20)}...`;
-            await supabase
+          // 为每个唯一市场创建或更新记录
+          for (const [marketId, marketTrade] of uniqueMarkets.entries()) {
+            const { data: existingMarket } = await supabase
               .from(TABLES.MARKETS)
-              .insert({
-                id: marketId,
-                title: marketTitle,
-                volume: totalAmount,
-                createdAt: beijingNow,
-                updatedAt: beijingNow,
-              });
-          } else {
-            await supabase
-              .from(TABLES.MARKETS)
-              .update({
-                volume: existingMarket.volume + totalAmount,
-                updatedAt: beijingNow,
-              })
-              .eq('id', marketId);
+              .select('id, volume')
+              .eq('id', marketId)
+              .single();
+            
+            // 计算该市场的总交易金额
+            const marketTrades = trades.filter(t => t.asset_id === marketId);
+            const marketTotalAmount = marketTrades.reduce((sum, t) => sum + t.amount_usdc, 0);
+            
+            if (!existingMarket) {
+              const marketTitle = (marketTrade as any).title || `Market ${marketId.substring(0, 20)}...`;
+              const { error: marketError } = await supabase
+                .from(TABLES.MARKETS)
+                .insert({
+                  id: marketId,
+                  title: marketTitle,
+                  volume: marketTotalAmount,
+                  createdAt: beijingNow,
+                  updatedAt: beijingNow,
+                });
+              
+              if (marketError) {
+                console.error(`[新钱包-高胜率] 创建市场失败 (${marketId}):`, marketError);
+              }
+            } else {
+              await supabase
+                .from(TABLES.MARKETS)
+                .update({
+                  volume: existingMarket.volume + marketTotalAmount,
+                  updatedAt: beijingNow,
+                })
+                .eq('id', marketId);
+            }
           }
           
           // 创建监控钱包记录（高胜率钱包）
+          // 【修复】使用 upsert 避免地址冲突
           const { data: wallet, error: walletError } = await supabase
             .from(TABLES.MONITORED_WALLETS)
-            .insert({
+            .upsert({
               address: normalizedAddress,
-              risk_score: 0, // 未进行可疑分析
-              funding_source: null,
-              last_active_at: beijingNow,
-              wallet_created_at: null,
+              riskScore: 0, // 未进行可疑分析
+              fundingSource: null,
+              lastActiveAt: beijingNow,
+              walletCreatedAt: null,
               wallet_type: ['high_win_rate'],
               win_rate: winRateResult.winRate,
               total_profit: winRateResult.totalProfit,
               win_rate_updated_at: beijingNow,
-              created_at: beijingNow,
-              updated_at: beijingNow,
+              createdAt: beijingNow,
+              updatedAt: beijingNow,
+            }, {
+              onConflict: 'address',
             })
             .select()
             .single();
           
-          if (!walletError && wallet) {
+          if (walletError) {
+            console.error(`[新钱包-高胜率] 创建/更新钱包失败 (${normalizedAddress}):`, walletError);
+          } else if (wallet) {
             // 创建交易事件记录
             const tradeEvents = trades.map(trade => {
               const isBuy = (trade as any).side === 'BUY' || (trade as any).side !== 'SELL';
@@ -500,13 +586,20 @@ async function processWallet(
               };
             });
             
-            await supabase
+            // 【修复】添加错误检查
+            const { error: tradeError } = await supabase
               .from(TABLES.TRADE_EVENTS)
               .insert(tradeEvents);
             
+            if (tradeError) {
+              console.error(`[新钱包-高胜率] 插入交易事件失败 (${normalizedAddress}):`, tradeError);
+            } else {
+              console.log(`✅ [新钱包-高胜率] 为钱包 ${normalizedAddress} 创建了 ${tradeEvents.length} 条交易事件记录`);
+            }
+            
             // 创建提醒记录
             if (scanLogId) {
-              await supabase
+              const { error: alertError } = await supabase
                 .from(TABLES.HIGH_WIN_RATE_ALERTS)
                 .insert({
                   wallet_address: normalizedAddress,
@@ -516,9 +609,16 @@ async function processWallet(
                   detected_at: beijingNow,
                   created_at: beijingNow,
                 });
+              
+              if (alertError) {
+                console.error(`[新钱包-高胜率] 创建提醒记录失败 (${normalizedAddress}):`, alertError);
+              }
             }
+          } else {
+            console.error(`[新钱包-高胜率] 钱包创建/更新后未返回数据 (${normalizedAddress})`);
           }
         }
+      }
       }
     } catch (error) {
       console.warn(`[路径2] 计算钱包 ${normalizedAddress} 胜率失败:`, error);
