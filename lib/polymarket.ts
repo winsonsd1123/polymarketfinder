@@ -100,6 +100,10 @@ class PolymarketClient {
           continue;
         }
 
+        // 打印原始响应数据
+        console.log(`\n📦 [原始数据] The Graph API 原始响应数据:`);
+        console.log(JSON.stringify(response.data, null, 2));
+        
         const fills = response.data.data?.fills || [];
         if (fills.length > 0) {
           console.log(`[Polymarket API] ✅ 从 The Graph 获取到 ${fills.length} 条交易`);
@@ -148,6 +152,10 @@ class PolymarketClient {
           },
         });
 
+        // 打印原始响应数据
+        console.log(`\n📦 [原始数据] CLOB API 原始响应数据:`);
+        console.log(JSON.stringify(response.data, null, 2));
+        
         const fills = response.data.fills || response.data.data || response.data || [];
         if (Array.isArray(fills) && fills.length > 0) {
           console.log(`[Polymarket API] ✅ 从 CLOB API 获取到 ${fills.length} 条交易`);
@@ -215,6 +223,10 @@ class PolymarketClient {
             throw new Error(`HTTP ${response.status}: ${response.statusText}`);
           }
 
+          // 打印原始响应数据
+          console.log(`\n📦 [原始数据] Data API 原始响应数据:`);
+          console.log(JSON.stringify(response.data, null, 2));
+          
           // Data API 返回的是数组，不是嵌套对象
           const trades = Array.isArray(response.data) 
             ? response.data 
@@ -517,6 +529,10 @@ class PolymarketClient {
           throw new Error(`HTTP ${response.status}: ${response.statusText}`);
         }
 
+        // 打印原始响应数据
+        console.log(`\n📦 [原始数据] Data API (with offset) 原始响应数据:`);
+        console.log(JSON.stringify(response.data, null, 2));
+        
         const trades = Array.isArray(response.data) 
           ? response.data 
           : (response.data?.trades || response.data?.data || []);

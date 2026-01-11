@@ -328,11 +328,68 @@ async function getFirstTransactionTime(
 }
 
 /**
- * 获取钱包的交易计数（nonce）
+ * 获取钱包的交易计数（使用 Alchemy API 统计所有类型的发送交易）
+ * 只统计发送的交易（fromAddress），不统计接收的交易
  */
 async function getTransactionCount(client: PublicClient, address: Address): Promise<number> {
+  const alchemyUrl = process.env.ALCHEMY_POLYGON_URL;
+  
+  // 如果配置了 Alchemy API，使用它来统计所有类型的发送交易
+  if (alchemyUrl && !alchemyUrl.includes('demo')) {
+    try {
+      console.log(`[交易统计] 🔍 正在通过 Alchemy API 统计钱包 ${address} 的发送交易...`);
+      
+      const response = await fetch(alchemyUrl, {
+        method: 'POST',
+        headers: { 
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'alchemy_getAssetTransfers',
+          params: [{
+            fromBlock: '0x0',
+            toBlock: 'latest',
+            fromAddress: address,
+            category: ['external', 'internal', 'erc20', 'erc721', 'erc1155', 'specialnft'],
+            maxCount: '0x3e8', // 最多查询1000条，用于统计
+            order: 'desc',
+          }],
+        }),
+        signal: AbortSignal.timeout(10000),
+      });
+
+      const data = await response.json();
+      
+      if (data.error) {
+        console.warn(`[交易统计] ⚠️  Alchemy API 错误，回退到 nonce:`, data.error);
+        // 回退到 nonce
+        return await client.getTransactionCount({ address });
+      }
+
+      const transfers = data.result?.transfers || [];
+      const totalCount = transfers.length;
+      
+      console.log(`[交易统计] ✅ 钱包 ${address} 的发送交易总数: ${totalCount} 笔（包括所有类型）`);
+      
+      // 如果查询到的数量达到1000，说明可能还有更多，但至少是1000+
+      if (totalCount >= 1000) {
+        console.log(`[交易统计] ⚠️  交易数量达到查询上限（1000），实际数量可能更多`);
+      }
+      
+      return totalCount;
+    } catch (error) {
+      console.warn(`[交易统计] ⚠️  Alchemy API 调用失败，回退到 nonce:`, error);
+      // 如果 Alchemy API 失败，回退到使用 nonce
+    }
+  }
+  
+  // 回退方案：使用 nonce（只统计外部交易）
   try {
     const nonce = await client.getTransactionCount({ address });
+    console.log(`[交易统计] 📊 钱包 ${address} 的 nonce: ${nonce}（仅外部交易）`);
     return nonce;
   } catch (error) {
     console.error('获取交易计数失败:', error);
@@ -479,15 +536,18 @@ export async function analyzeWallet(
       details.push(`钱包创建时间: ${ageHours.toFixed(2)} 小时前`);
     }
 
-    // 2. 检查交易次数（nonce < 10，+30分）
-    const nonce = await getTransactionCount(client, walletAddress);
-    checks.transactionCount.nonce = nonce;
+    // 2. 检查交易次数（发送交易 < 10，+30分）
+    // 使用 Alchemy API 统计所有类型的发送交易（包括 ERC-20、ERC-1155 等）
+    const transactionCount = await getTransactionCount(client, walletAddress);
+    checks.transactionCount.nonce = transactionCount;
 
-    if (nonce < 10) {
+    if (transactionCount < 10) {
       score += 30;
       checks.transactionCount.score = 30;
       checks.transactionCount.passed = true;
-      details.push(`交易次数少于 10 次（${nonce} 次），风险分 +30`);
+      details.push(`发送交易次数少于 10 次（${transactionCount} 次，包括所有类型），风险分 +30`);
+    } else {
+      details.push(`发送交易次数: ${transactionCount} 次（包括所有类型）`);
     }
 
     // 3. 检查市场参与度（< 3个市场，+20分）
