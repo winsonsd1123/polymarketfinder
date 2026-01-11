@@ -795,3 +795,123 @@ export function getProcessedCount(): number {
   return polymarketClient.getProcessedCount();
 }
 
+/**
+ * Closed Position 数据结构（从 Closed Positions API 返回）
+ */
+export interface ClosedPosition {
+  proxyWallet: string;
+  asset: string;
+  conditionId: string;
+  avgPrice: number;
+  totalBought: number;
+  realizedPnl: number;
+  curPrice: number;
+  timestamp: number;
+  title: string;
+  slug: string;
+  icon?: string;
+  eventSlug?: string;
+  outcome: string;
+  outcomeIndex: number;
+  oppositeOutcome: string;
+  oppositeAsset: string;
+  endDate?: string;
+}
+
+/**
+ * 获取钱包的已结算持仓（Closed Positions）的选项
+ */
+export interface FetchClosedPositionsOptions {
+  maxPositions?: number; // 最大获取数量，默认200
+  minValidPositions?: number; // 一旦获取到这么多有效数据就停止，默认100
+}
+
+/**
+ * 获取钱包的已结算持仓（Closed Positions）
+ * @param walletAddress 钱包地址
+ * @param options 获取选项
+ * @returns 已结算持仓列表
+ */
+export async function fetchClosedPositions(
+  walletAddress: string,
+  options?: FetchClosedPositionsOptions
+): Promise<ClosedPosition[]> {
+  const normalizedAddress = walletAddress.toLowerCase();
+  const maxPositions = options?.maxPositions ?? 200; // 默认只获取200条
+  const minValidPositions = options?.minValidPositions ?? 100; // 有100条有效数据就停止
+  const allPositions: ClosedPosition[] = [];
+  let offset = 0;
+  const limit = 50; // API 最大限制
+  const maxPages = Math.ceil(maxPositions / limit); // 根据maxPositions计算最大页数
+
+  console.log(`[Polymarket API] 开始获取钱包 ${normalizedAddress} 的已结算持仓（最多 ${maxPositions} 条，满足 ${minValidPositions} 条有效数据即停止）...`);
+
+  for (let page = 0; page < maxPages; page++) {
+    try {
+      const response = await axios.get('https://data-api.polymarket.com/closed-positions', {
+        params: {
+          user: normalizedAddress,
+          limit: limit,
+          offset: offset,
+        },
+        timeout: 30000,
+        headers: {
+          'Accept': 'application/json',
+          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+        },
+      });
+
+      if (response.status >= 400) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+
+      const positions = Array.isArray(response.data) ? response.data : [];
+      
+      if (positions.length === 0) {
+        // 没有更多数据了
+        break;
+      }
+
+      // 过滤掉 realizedPnl 为 null 的记录
+      const validPositions = positions.filter((pos: any) => 
+        pos.realizedPnl !== null && pos.realizedPnl !== undefined
+      );
+
+      allPositions.push(...validPositions);
+      
+      // 早期退出：如果已经有足够的有效数据，就停止获取
+      if (allPositions.length >= minValidPositions) {
+        console.log(`[Polymarket API] ✅ 已获取 ${allPositions.length} 条有效持仓，满足最小需求（${minValidPositions}），停止获取`);
+        break;
+      }
+
+      // 如果已经达到最大数量，停止
+      if (allPositions.length >= maxPositions) {
+        console.log(`[Polymarket API] ✅ 已达到最大数量 ${maxPositions}，停止获取`);
+        break;
+      }
+
+      // 如果返回的数据少于 limit，说明已经到底了
+      if (positions.length < limit) {
+        break;
+      }
+
+      offset += positions.length;
+      
+      // 添加延迟避免 API 限流
+      if (page < maxPages - 1) {
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+    } catch (error: any) {
+      console.error(`[Polymarket API] 获取已结算持仓失败（第 ${page + 1} 页）:`, error.message);
+      // 如果第一页就失败，抛出错误；否则返回已获取的数据
+      if (page === 0) {
+        throw error;
+      }
+      break;
+    }
+  }
+
+  console.log(`[Polymarket API] ✅ 完成获取钱包 ${normalizedAddress} 的已结算持仓，共 ${allPositions.length} 条`);
+  return allPositions;
+}

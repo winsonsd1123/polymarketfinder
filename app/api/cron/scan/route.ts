@@ -4,6 +4,7 @@ import { fetchRecentTrades, fetchRecentTradesBatch, type PolymarketTrade } from 
 import { analyzeWallet, type WalletAnalysisResult } from '@/lib/analyzer';
 import { supabase, TABLES } from '@/lib/supabase';
 import { getBeijingTime, toBeijingTime, parseToUTCDate } from '@/lib/time-utils';
+import { calculateWinRate, saveWinRateToDatabase, isHighWinRate, getWinRateThreshold } from '@/lib/win-rate';
 
 /**
  * 扫描结果统计
@@ -14,40 +15,126 @@ interface ScanResult {
   newWallets: number;
   suspiciousWallets: number;
   skippedWallets: number;
+  highWinRateWallets: number;
   errors: number;
   details: {
     newWallets: string[];
     suspiciousWallets: string[];
+    highWinRateWallets: string[];
     errors: string[];
   };
 }
 
 /**
  * 处理单个钱包的分析和入库
- * @param address 钱包地址
+ * 
+ * 重要逻辑说明：
+ * 1. 此函数只对本次扫描中出现的钱包调用
+ * 2. 如果原来监控的钱包没出现在这批交易里面，不会调用此函数，不处理（符合需求）
+ * 3. 胜率分析基于钱包的所有历史已结算持仓（Closed Positions API）
+ * 4. 交易提醒只记录本次扫描中的交易
+ * 
+ * @param address 钱包地址（本次扫描中出现的钱包）
  * @param trades 本次扫描中该钱包的所有交易记录
+ * @param scanLogId 扫描日志ID（用于创建提醒记录）
  */
 async function processWallet(
   address: string,
-  trades: PolymarketTrade[]
-): Promise<{ success: boolean; isNew: boolean; isSuspicious: boolean; error?: string; shouldStop?: boolean }> {
+  trades: PolymarketTrade[],
+  scanLogId?: string | null
+): Promise<{ success: boolean; isNew: boolean; isSuspicious: boolean; isHighWinRate?: boolean; error?: string; shouldStop?: boolean }> {
   try {
     const normalizedAddress = address.toLowerCase();
 
     // 检查钱包是否已存在
     const { data: existingWallet, error: findError } = await supabase
       .from(TABLES.MONITORED_WALLETS)
-      .select('id, lastActiveAt')
+      .select('id, lastActiveAt, riskScore, wallet_type')
       .eq('address', normalizedAddress)
       .single();
 
     if (existingWallet && !findError) {
-      // 更新最后活跃时间（使用北京时间）
+      // 已存在的钱包：本次扫描有交易，更新最后活跃时间
+      // 注意：如果钱包不在本次扫描中，不会调用此函数，所以不会更新
       await supabase
         .from(TABLES.MONITORED_WALLETS)
-        .update({ lastActiveAt: getBeijingTime() })
+        .update({ last_active_at: getBeijingTime() })
         .eq('id', existingWallet.id);
-      return { success: true, isNew: false, isSuspicious: false };
+      
+      // 路径2：计算胜率（仅对本次扫描中出现的钱包）
+      // 胜率分析基于钱包的所有历史已结算持仓，但只对本次扫描中的钱包计算
+      // 注意：如果钱包不在本次扫描中，不会调用此函数，所以这里只处理本次扫描中的钱包
+      let isHighWinRateWallet = false;
+      try {
+        const winRateResult = await calculateWinRate(normalizedAddress);
+        if (winRateResult && winRateResult.totalPositions >= 5) {
+          // 保存到胜率库
+          await saveWinRateToDatabase(normalizedAddress, winRateResult);
+          
+          // 如果胜率达标，更新 monitored_wallets 并创建提醒
+          if (isHighWinRate(winRateResult.winRate)) {
+            isHighWinRateWallet = true;
+            
+            // 检查钱包类型，追加 'high_win_rate'
+            const { data: wallet } = await supabase
+              .from(TABLES.MONITORED_WALLETS)
+              .select('wallet_type')
+              .eq('id', existingWallet.id)
+              .single();
+            
+            const currentTypes = (wallet?.wallet_type as string[]) || [];
+            // 如果没有类型，根据 riskScore 判断
+            const riskScore = (existingWallet as any).riskScore || 0;
+            const defaultTypes = currentTypes.length === 0 
+              ? (riskScore >= 50 ? ['suspicious'] : [])
+              : currentTypes;
+            const hasHighWinRate = Array.isArray(defaultTypes) && defaultTypes.includes('high_win_rate');
+            
+            if (!hasHighWinRate) {
+              const updatedTypes = [...defaultTypes, 'high_win_rate'];
+              await supabase
+                .from(TABLES.MONITORED_WALLETS)
+                .update({
+                  wallet_type: updatedTypes,
+                  win_rate: winRateResult.winRate,
+                  total_profit: winRateResult.totalProfit,
+                  win_rate_updated_at: getBeijingTime(),
+                })
+                .eq('id', existingWallet.id);
+            } else {
+              // 更新胜率数据
+              await supabase
+                .from(TABLES.MONITORED_WALLETS)
+                .update({
+                  win_rate: winRateResult.winRate,
+                  total_profit: winRateResult.totalProfit,
+                  win_rate_updated_at: getBeijingTime(),
+                })
+                .eq('id', existingWallet.id);
+            }
+            
+            // 创建提醒记录（记录本次扫描的交易）
+            // 注意：只记录本次扫描中的交易，不记录历史交易
+            if (trades.length > 0 && scanLogId) {
+              await supabase
+                .from(TABLES.HIGH_WIN_RATE_ALERTS)
+                .insert({
+                  wallet_address: normalizedAddress,
+                  scan_log_id: scanLogId,
+                  trade_count: trades.length, // 本次扫描的交易数量
+                  win_rate: winRateResult.winRate, // 基于所有历史已结算持仓计算的胜率
+                  detected_at: getBeijingTime(),
+                  created_at: getBeijingTime(),
+                });
+            }
+          }
+        }
+      } catch (error) {
+        console.warn(`[路径2] 计算钱包 ${normalizedAddress} 胜率失败:`, error);
+        // 不影响主流程
+      }
+      
+      return { success: true, isNew: false, isSuspicious: false, isHighWinRate: isHighWinRateWallet };
     }
 
     // 新钱包，进行分析（传入本次扫描中该钱包的所有交易）
@@ -235,12 +322,13 @@ async function processWallet(
         .from(TABLES.MONITORED_WALLETS)
         .insert({
           address: normalizedAddress,
-          riskScore: analysis.score,
-          fundingSource: analysis.checks.fundingSource?.sourceAddress || null,
-          lastActiveAt: beijingNow,
-          walletCreatedAt: walletCreatedAtBeijing, // 钱包在链上的创建时间（北京时间）
-          createdAt: beijingNow, // 显式设置创建时间为北京时间
-          updatedAt: beijingNow, // 显式设置更新时间为北京时间
+          risk_score: analysis.score,
+          funding_source: analysis.checks.fundingSource?.sourceAddress || null,
+          last_active_at: beijingNow,
+          wallet_created_at: walletCreatedAtBeijing, // 钱包在链上的创建时间（北京时间）
+          wallet_type: ['suspicious'], // 可疑钱包类型
+          created_at: beijingNow, // 显式设置创建时间为北京时间
+          updated_at: beijingNow, // 显式设置更新时间为北京时间
         })
         .select()
         .single();
@@ -283,10 +371,161 @@ async function processWallet(
         console.log(`✅ 为钱包 ${normalizedAddress} 创建了 ${tradeEvents.length} 条交易事件记录`);
       }
 
-      return { success: true, isNew: true, isSuspicious: true };
+      // 路径2：计算胜率（新钱包也计算）
+      let isHighWinRateWallet = false;
+      try {
+        const winRateResult = await calculateWinRate(normalizedAddress);
+        if (winRateResult && winRateResult.totalPositions >= 5) {
+          // 保存到胜率库
+          await saveWinRateToDatabase(normalizedAddress, winRateResult);
+          
+          // 如果胜率达标，更新 monitored_wallets
+          if (isHighWinRate(winRateResult.winRate)) {
+            isHighWinRateWallet = true;
+            
+            // 更新钱包类型，追加 'high_win_rate'
+            await supabase
+              .from(TABLES.MONITORED_WALLETS)
+              .update({
+                wallet_type: ['suspicious', 'high_win_rate'],
+                win_rate: winRateResult.winRate,
+                total_profit: winRateResult.totalProfit,
+                win_rate_updated_at: getBeijingTime(),
+              })
+              .eq('id', wallet.id);
+            
+            // 创建提醒记录
+            if (scanLogId) {
+              await supabase
+                .from(TABLES.HIGH_WIN_RATE_ALERTS)
+                .insert({
+                  wallet_address: normalizedAddress,
+                  scan_log_id: scanLogId,
+                  trade_count: trades.length,
+                  win_rate: winRateResult.winRate,
+                  detected_at: getBeijingTime(),
+                  created_at: getBeijingTime(),
+                });
+            }
+          }
+        }
+      } catch (error) {
+        console.warn(`[路径2] 计算钱包 ${normalizedAddress} 胜率失败:`, error);
+        // 不影响主流程
+      }
+      
+      return { success: true, isNew: true, isSuspicious: true, isHighWinRate: isHighWinRateWallet };
     }
 
-    return { success: true, isNew: true, isSuspicious: false };
+    // 路径2：如果不可疑，但可能是高胜率钱包
+    let isHighWinRateWallet = false;
+    try {
+      const winRateResult = await calculateWinRate(normalizedAddress);
+      if (winRateResult && winRateResult.totalPositions >= 5) {
+        // 保存到胜率库
+        await saveWinRateToDatabase(normalizedAddress, winRateResult);
+        
+        // 如果胜率达标，创建 monitored_wallets 记录
+        if (isHighWinRate(winRateResult.winRate)) {
+          isHighWinRateWallet = true;
+          
+          const beijingNow = getBeijingTime();
+          const firstTrade = trades[0];
+          const marketId = firstTrade.asset_id;
+          
+          // 确保市场存在
+          const { data: existingMarket } = await supabase
+            .from(TABLES.MARKETS)
+            .select('id, volume')
+            .eq('id', marketId)
+            .single();
+          
+          const totalAmount = trades.reduce((sum, t) => sum + t.amount_usdc, 0);
+          
+          if (!existingMarket) {
+            const marketTitle = (firstTrade as any).title || `Market ${marketId.substring(0, 20)}...`;
+            await supabase
+              .from(TABLES.MARKETS)
+              .insert({
+                id: marketId,
+                title: marketTitle,
+                volume: totalAmount,
+                createdAt: beijingNow,
+                updatedAt: beijingNow,
+              });
+          } else {
+            await supabase
+              .from(TABLES.MARKETS)
+              .update({
+                volume: existingMarket.volume + totalAmount,
+                updatedAt: beijingNow,
+              })
+              .eq('id', marketId);
+          }
+          
+          // 创建监控钱包记录（高胜率钱包）
+          const { data: wallet, error: walletError } = await supabase
+            .from(TABLES.MONITORED_WALLETS)
+            .insert({
+              address: normalizedAddress,
+              risk_score: 0, // 未进行可疑分析
+              funding_source: null,
+              last_active_at: beijingNow,
+              wallet_created_at: null,
+              wallet_type: ['high_win_rate'],
+              win_rate: winRateResult.winRate,
+              total_profit: winRateResult.totalProfit,
+              win_rate_updated_at: beijingNow,
+              created_at: beijingNow,
+              updated_at: beijingNow,
+            })
+            .select()
+            .single();
+          
+          if (!walletError && wallet) {
+            // 创建交易事件记录
+            const tradeEvents = trades.map(trade => {
+              const isBuy = (trade as any).side === 'BUY' || (trade as any).side !== 'SELL';
+              const outcome = trade.outcome || null;
+              const tradeBeijingTime = toBeijingTime(parseToUTCDate(trade.timestamp));
+              
+              return {
+                marketId: trade.asset_id,
+                walletId: wallet.id,
+                amount: trade.amount_usdc,
+                isBuy: isBuy,
+                outcome: outcome,
+                timestamp: tradeBeijingTime,
+                createdAt: getBeijingTime(),
+              };
+            });
+            
+            await supabase
+              .from(TABLES.TRADE_EVENTS)
+              .insert(tradeEvents);
+            
+            // 创建提醒记录
+            if (scanLogId) {
+              await supabase
+                .from(TABLES.HIGH_WIN_RATE_ALERTS)
+                .insert({
+                  wallet_address: normalizedAddress,
+                  scan_log_id: scanLogId,
+                  trade_count: trades.length,
+                  win_rate: winRateResult.winRate,
+                  detected_at: beijingNow,
+                  created_at: beijingNow,
+                });
+            }
+          }
+        }
+      }
+    } catch (error) {
+      console.warn(`[路径2] 计算钱包 ${normalizedAddress} 胜率失败:`, error);
+      // 不影响主流程
+    }
+    
+    return { success: true, isNew: true, isSuspicious: false, isHighWinRate: isHighWinRateWallet };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     console.error(`处理钱包 ${address} 时出错:`, errorMessage);
@@ -331,10 +570,12 @@ export async function GET(request: NextRequest) {
     newWallets: 0,
     suspiciousWallets: 0,
     skippedWallets: 0,
+    highWinRateWallets: 0,
     errors: 0,
     details: {
       newWallets: [],
       suspiciousWallets: [],
+      highWinRateWallets: [],
       errors: [],
     },
   };
@@ -385,6 +626,8 @@ export async function GET(request: NextRequest) {
     }
 
     // 2. 按钱包地址分组交易（保留每个钱包的所有交易记录）
+    // 重要：只对本次扫描中出现的钱包进行分析
+    // 如果原来监控的钱包没出现在这批交易里面，不会处理（符合需求）
     const walletTradesMap = new Map<string, PolymarketTrade[]>();
     for (const trade of trades) {
       const address = trade.maker_address.toLowerCase();
@@ -394,7 +637,7 @@ export async function GET(request: NextRequest) {
       walletTradesMap.get(address)!.push(trade);
     }
 
-    console.log(`📊 发现 ${walletTradesMap.size} 个唯一钱包地址`);
+    console.log(`📊 发现 ${walletTradesMap.size} 个唯一钱包地址（仅本次扫描中出现的钱包）`);
     // 打印每个钱包的交易数量统计
     const walletStats = Array.from(walletTradesMap.entries()).map(([addr, trades]) => ({
       address: addr,
@@ -406,7 +649,7 @@ export async function GET(request: NextRequest) {
     const limitConcurrency = pLimit(concurrency);
     const processPromises = Array.from(walletTradesMap.entries()).map(([address, walletTrades]) =>
       limitConcurrency(async () => {
-        const processResult = await processWallet(address, walletTrades);
+        const processResult = await processWallet(address, walletTrades, scanLogId);
         result.processedWallets++;
 
         if (!processResult.success) {
@@ -425,8 +668,16 @@ export async function GET(request: NextRequest) {
             result.suspiciousWallets++;
             result.details.suspiciousWallets.push(address);
           }
+          if (processResult.isHighWinRate) {
+            result.highWinRateWallets++;
+            result.details.highWinRateWallets.push(address);
+          }
         } else {
           result.skippedWallets++;
+          if (processResult.isHighWinRate) {
+            result.highWinRateWallets++;
+            result.details.highWinRateWallets.push(address);
+          }
         }
       })
     );
@@ -441,6 +692,7 @@ export async function GET(request: NextRequest) {
     console.log(`   处理钱包数: ${result.processedWallets}`);
     console.log(`   新钱包数: ${result.newWallets}`);
     console.log(`   可疑钱包数: ${result.suspiciousWallets}`);
+    console.log(`   高胜率钱包数: ${result.highWinRateWallets}`);
     console.log(`   跳过钱包数: ${result.skippedWallets}`);
     console.log(`   错误数: ${result.errors}`);
     console.log(`   耗时: ${duration}ms`);
@@ -449,6 +701,14 @@ export async function GET(request: NextRequest) {
     if (result.details.suspiciousWallets.length > 0) {
       console.log(`\n⚠️  可疑钱包列表 (${result.suspiciousWallets} 个):`);
       result.details.suspiciousWallets.forEach((addr, index) => {
+        console.log(`   ${index + 1}. ${addr}`);
+      });
+    }
+    
+    // 打印高胜率钱包列表
+    if (result.details.highWinRateWallets.length > 0) {
+      console.log(`\n🎯 高胜率钱包列表 (${result.highWinRateWallets} 个):`);
+      result.details.highWinRateWallets.forEach((addr, index) => {
         console.log(`   ${index + 1}. ${addr}`);
       });
     }
@@ -467,6 +727,7 @@ export async function GET(request: NextRequest) {
           skipped_wallets: result.skippedWallets,
           errors: result.errors,
           success: true,
+          // 注意：scan_logs 表可能没有 high_win_rate_wallets 字段，如果报错可以忽略或添加字段
         })
         .eq('id', scanLogId);
     }

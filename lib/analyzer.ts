@@ -470,6 +470,15 @@ async function getFundingSource(
 }
 
 /**
+ * 获取最小交易金额阈值（从环境变量读取，默认 5000）
+ * 只有交易金额超过此阈值才会进行可疑钱包分析
+ */
+function getMinTradeAmountForAnalysis(): number {
+  const minAmount = process.env.MIN_TRADE_AMOUNT_FOR_ANALYSIS;
+  return minAmount ? parseFloat(minAmount) : 5000;
+}
+
+/**
  * 分析钱包是否为可疑钱包
  * @param address 钱包地址
  * @param currentTrades 本次扫描中该钱包的所有交易记录
@@ -511,6 +520,22 @@ export async function analyzeWallet(
         isSuspicious: false,
         score: 0,
         details: '无效的钱包地址格式',
+        checks,
+      };
+    }
+
+    // 【优化】先检查交易金额阈值，如果金额不足，直接返回0分，避免不必要的API调用
+    const minTradeAmount = getMinTradeAmountForAnalysis();
+    const maxTradeAmount = currentTrades.length > 0 
+      ? Math.max(...currentTrades.map(t => t.amount_usdc))
+      : (currentTradeAmount || 0);
+    
+    if (maxTradeAmount < minTradeAmount) {
+      details.push(`交易金额过小（$${maxTradeAmount.toFixed(2)} < $${minTradeAmount}），跳过分析，直接判定为0分`);
+      return {
+        isSuspicious: false,
+        score: 0,
+        details: details.join('; '),
         checks,
       };
     }
@@ -617,11 +642,7 @@ export async function analyzeWallet(
     }
 
     // 4. 检查单笔交易规模（> $10,000，+10分）- 截图规则
-    // 使用本次扫描中最大单笔交易金额
-    const maxTradeAmount = currentTrades.length > 0 
-      ? Math.max(...currentTrades.map(t => t.amount_usdc))
-      : (currentTradeAmount || 0);
-    
+    // 使用本次扫描中最大单笔交易金额（已在函数开头计算）
     if (maxTradeAmount > 10000) {
       score += 10;
       checks.transactionAmount = {
@@ -690,17 +711,8 @@ export async function analyzeWallet(
     }
 
     // 判断是否可疑（总分 >= 50 视为可疑）
-    // 但是，如果最大交易金额 < 5000，即使分数再高也不标记为可疑
-    let isSuspicious = score >= 50;
-    
-    const maxAmount = currentTrades.length > 0 
-      ? Math.max(...currentTrades.map(t => t.amount_usdc))
-      : (currentTradeAmount || 0);
-    
-    if (maxAmount > 0 && maxAmount < 5000) {
-      isSuspicious = false;
-      details.push(`交易金额过小（$${maxAmount.toFixed(2)} < $5000），解除可疑标记`);
-    }
+    // 注意：金额阈值检查已在函数开头完成，这里不需要再次检查
+    const isSuspicious = score >= 50;
 
     return {
       isSuspicious,

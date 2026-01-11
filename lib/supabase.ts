@@ -29,6 +29,18 @@ export const supabase = createClient(supabaseUrl, supabaseKey, {
     autoRefreshToken: false,
     persistSession: false,
   },
+  db: {
+    schema: 'public',
+  },
+  global: {
+    // 增加超时时间到 30 秒
+    fetch: (url, options = {}) => {
+      return fetch(url, {
+        ...options,
+        signal: AbortSignal.timeout(30000), // 30秒超时
+      });
+    },
+  },
 });
 
 /**
@@ -40,11 +52,15 @@ export const TABLES = {
   MARKETS: 'markets',
   SCAN_LOGS: 'scan_logs',
   WALLET_ANALYSIS_HISTORY: 'wallet_analysis_history',
+  WALLET_WIN_RATES: 'wallet_win_rates',
+  HIGH_WIN_RATE_ALERTS: 'high_win_rate_alerts',
 } as const;
 
 /**
  * 类型定义（基于数据库表结构）
  */
+export type WalletType = 'suspicious' | 'high_win_rate';
+
 export interface MonitoredWallet {
   id: number; // bigint，自增 ID
   address: string;
@@ -55,6 +71,10 @@ export interface MonitoredWallet {
   createdAt: string; // 记录创建时间（北京时间）
   updatedAt: string; // 记录更新时间（北京时间）
   isStarred: boolean; // 是否关注
+  walletType: string[]; // 钱包类型数组：['suspicious']、['high_win_rate']、['suspicious', 'high_win_rate']
+  winRate: number | null; // 胜率百分比（0-100）
+  totalProfit: number | null; // 总盈亏（USDC）
+  winRateUpdatedAt: string | null; // 胜率最后更新时间（北京时间）
 }
 
 export interface Market {
@@ -115,4 +135,26 @@ export interface WalletAnalysisHistory {
   fundingSource: string | null;
   analyzedAt: string;
   createdAt: string;
+}
+
+export interface WalletWinRate {
+  walletAddress: string; // PK
+  totalPositions: number; // 总已结算持仓数
+  winningPositions: number; // 盈利次数（realizedPnl > 0）
+  losingPositions: number; // 亏损次数（realizedPnl < 0）
+  winRate: number; // 胜率百分比（0-100）
+  totalProfit: number; // 总盈亏（USDC）
+  avgProfit: number; // 平均盈亏（USDC）
+  lastUpdatedAt: string; // 最后更新时间（北京时间）
+  createdAt: string; // 创建时间（北京时间）
+}
+
+export interface HighWinRateAlert {
+  id: number; // bigint，自增 ID
+  walletAddress: string;
+  scanLogId: number | null; // 关联扫描日志ID
+  tradeCount: number; // 本次扫描的交易数量
+  winRate: number; // 当前胜率
+  detectedAt: string; // 检测时间（北京时间）
+  createdAt: string; // 创建时间（北京时间）
 }

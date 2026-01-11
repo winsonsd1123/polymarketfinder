@@ -11,12 +11,44 @@ export async function GET(request: NextRequest) {
     const searchParams = request.nextUrl.searchParams;
     const limit = parseInt(searchParams.get('limit') || '10', 10);
 
-    // 获取最新的扫描记录
-    const { data: scanLogs, error } = await supabase
-      .from(TABLES.SCAN_LOGS)
-      .select('*')
-      .order('created_at', { ascending: false })
-      .limit(limit);
+    // 获取最新的扫描记录（带重试机制）
+    let scanLogs = null;
+    let error = null;
+    const maxRetries = 3;
+    const retryDelay = 1000; // 1秒
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        const result = await supabase
+          .from(TABLES.SCAN_LOGS)
+          .select('*')
+          .order('created_at', { ascending: false })
+          .limit(limit);
+
+        scanLogs = result.data;
+        error = result.error;
+
+        if (!error) {
+          break; // 成功，退出重试循环
+        }
+
+        // 如果是最后一次尝试，抛出错误
+        if (attempt === maxRetries) {
+          throw error;
+        }
+
+        // 等待后重试
+        console.warn(`[扫描日志] 查询失败，${retryDelay}ms 后重试 (${attempt}/${maxRetries})...`);
+        await new Promise(resolve => setTimeout(resolve, retryDelay * attempt));
+      } catch (err) {
+        error = err;
+        if (attempt === maxRetries) {
+          throw err;
+        }
+        console.warn(`[扫描日志] 查询异常，${retryDelay}ms 后重试 (${attempt}/${maxRetries})...`);
+        await new Promise(resolve => setTimeout(resolve, retryDelay * attempt));
+      }
+    }
 
     if (error) {
       throw error;
@@ -49,12 +81,22 @@ export async function GET(request: NextRequest) {
     });
   } catch (error) {
     console.error('获取扫描日志失败:', error);
+    
+    // 检查是否是连接超时错误
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    const isTimeoutError = errorMessage.includes('timeout') || 
+                          errorMessage.includes('Timeout') ||
+                          errorMessage.includes('UND_ERR_CONNECT_TIMEOUT');
+    
     return NextResponse.json(
       {
         success: false,
-        error: error instanceof Error ? error.message : String(error),
+        error: errorMessage,
+        details: isTimeoutError 
+          ? 'Supabase 连接超时，请检查网络连接或稍后重试'
+          : undefined,
       },
-      { status: 500 }
+      { status: isTimeoutError ? 504 : 500 } // 504 Gateway Timeout for timeout errors
     );
   }
 }

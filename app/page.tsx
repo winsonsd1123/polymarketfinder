@@ -32,6 +32,9 @@ interface Wallet {
   markets: Array<{ id: string; title: string }>;
   tradeCount: number;
   isStarred: boolean; // 是否关注
+  walletType?: string[]; // 钱包类型数组
+  winRate?: number | null; // 胜率百分比
+  totalProfit?: number | null; // 总盈亏
 }
 
 interface Trade {
@@ -57,6 +60,7 @@ interface ScanLog {
   newWallets: number;
   suspiciousWallets: number;
   skippedWallets: number;
+  highWinRateWallets?: number;
   errors: number;
   success: boolean;
   errorMessage: string | null;
@@ -104,6 +108,12 @@ export default function Home() {
   const [refreshProgress, setRefreshProgress] = useState(0);
   const [refreshStatus, setRefreshStatus] = useState<string>('');
   const [updatingStar, setUpdatingStar] = useState<string | null>(null);
+  const [walletFilter, setWalletFilter] = useState<'all' | 'suspicious' | 'high_win_rate'>('all');
+  const [highWinRateWallets, setHighWinRateWallets] = useState<Wallet[]>([]);
+  const [loadingHighWinRate, setLoadingHighWinRate] = useState(false);
+  const [highWinRateAlerts, setHighWinRateAlerts] = useState<any[]>([]);
+  const [loadingAlerts, setLoadingAlerts] = useState(false);
+  const [alertTimeRange, setAlertTimeRange] = useState<'24h' | '7d' | '30d' | 'all'>('24h');
 
   // 获取钱包列表
   const fetchWallets = async () => {
@@ -129,6 +139,48 @@ export default function Home() {
       console.error('获取钱包列表失败:', error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  // 获取高胜率钱包列表
+  const fetchHighWinRateWallets = async () => {
+    setLoadingHighWinRate(true);
+    try {
+      const response = await fetch('/api/wallets/win-rate?limit=100');
+      const data = await response.json();
+      if (data.success) {
+        setHighWinRateWallets(data.data);
+      }
+    } catch (error) {
+      console.error('获取高胜率钱包列表失败:', error);
+    } finally {
+      setLoadingHighWinRate(false);
+    }
+  };
+
+  // 获取高胜率钱包实时交易提醒
+  const fetchHighWinRateAlerts = async (timeRange: '24h' | '7d' | '30d' | 'all' = alertTimeRange) => {
+    setLoadingAlerts(true);
+    try {
+      // 根据时间范围计算小时数
+      const hoursMap = {
+        '24h': 24,
+        '7d': 24 * 7,
+        '30d': 24 * 30,
+        'all': 24 * 365, // 一年，基本等于全部
+      };
+      const hours = hoursMap[timeRange];
+      const limit = timeRange === 'all' ? 100 : 50; // 全部时返回更多
+      
+      const response = await fetch(`/api/high-win-rate-alerts?limit=${limit}&hours=${hours}`);
+      const data = await response.json();
+      if (data.success) {
+        setHighWinRateAlerts(data.data);
+      }
+    } catch (error) {
+      console.error('获取高胜率钱包交易提醒失败:', error);
+    } finally {
+      setLoadingAlerts(false);
     }
   };
 
@@ -220,7 +272,7 @@ export default function Home() {
               await new Promise((resolve) => setTimeout(resolve, 500));
               
               // 重新获取钱包列表和扫描日志
-              await Promise.all([fetchWallets(), fetchScanLogs()]);
+              await Promise.all([fetchWallets(), fetchScanLogs(), fetchHighWinRateWallets(), fetchHighWinRateAlerts()]);
               
               setRefreshStatus('完成');
               setTimeout(() => {
@@ -269,7 +321,7 @@ export default function Home() {
           await new Promise((resolve) => setTimeout(resolve, 500));
 
           // 重新获取钱包列表和扫描日志
-          await Promise.all([fetchWallets(), fetchScanLogs()]);
+          await Promise.all([fetchWallets(), fetchScanLogs(), fetchHighWinRateWallets()]);
           
           setRefreshStatus('完成');
           setTimeout(() => {
@@ -367,10 +419,24 @@ export default function Home() {
   useEffect(() => {
     fetchWallets();
     fetchScanLogs();
+    fetchHighWinRateWallets();
+    fetchHighWinRateAlerts();
     if (showHistory) {
       fetchAnalysisHistory();
     }
   }, [showHistory]);
+
+  // 根据筛选器获取显示的钱包列表
+  const getDisplayedWallets = () => {
+    if (walletFilter === 'high_win_rate') {
+      return highWinRateWallets;
+    } else if (walletFilter === 'suspicious') {
+      return wallets.filter(w => 
+        w.walletType?.includes('suspicious') || (!w.walletType && w.riskScore >= 50)
+      );
+    }
+    return wallets;
+  };
 
   if (loading) {
     return (
@@ -389,7 +455,7 @@ export default function Home() {
         <div>
           <h1 className="text-3xl font-bold">内幕钱包监控</h1>
           <p className="mt-2 text-muted-foreground">
-            共监控 {wallets.length} 个可疑钱包
+            共监控 {wallets.length} 个钱包 · 高胜率钱包 {highWinRateWallets.length} 个
             {lastScanTime && (
               <span className="ml-4">
                 · 上次扫描: {formatRelativeTime(lastScanTime)}
@@ -410,6 +476,31 @@ export default function Home() {
         </div>
       </div>
 
+      {/* 钱包类型筛选 */}
+      <div className="mb-4 flex gap-2">
+        <Button
+          variant={walletFilter === 'all' ? "default" : "outline"}
+          onClick={() => setWalletFilter('all')}
+          size="sm"
+        >
+          全部 ({wallets.length})
+        </Button>
+        <Button
+          variant={walletFilter === 'suspicious' ? "default" : "outline"}
+          onClick={() => setWalletFilter('suspicious')}
+          size="sm"
+        >
+          可疑钱包 ({wallets.filter(w => w.walletType?.includes('suspicious') || (!w.walletType && w.riskScore >= 50)).length})
+        </Button>
+        <Button
+          variant={walletFilter === 'high_win_rate' ? "default" : "outline"}
+          onClick={() => setWalletFilter('high_win_rate')}
+          size="sm"
+        >
+          高胜率钱包 ({highWinRateWallets.length})
+        </Button>
+      </div>
+
       {/* 刷新进度条 */}
       {refreshing && (
         <div className="mb-6 rounded-lg border bg-card p-4">
@@ -425,7 +516,7 @@ export default function Home() {
       {latestScan && (
         <div className="mb-6 rounded-lg border bg-card p-4">
           <h2 className="mb-3 text-lg font-semibold">最新扫描统计</h2>
-          <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+          <div className={`grid gap-4 ${latestScan.highWinRateWallets !== undefined ? 'grid-cols-2 md:grid-cols-5' : 'grid-cols-2 md:grid-cols-4'}`}>
             <div>
               <div className="text-sm text-muted-foreground">总交易数</div>
               <div className="text-2xl font-bold">{latestScan.totalTrades}</div>
@@ -442,6 +533,12 @@ export default function Home() {
               <div className="text-sm text-muted-foreground">可疑钱包</div>
               <div className="text-2xl font-bold text-red-600">{latestScan.suspiciousWallets}</div>
             </div>
+            {latestScan.highWinRateWallets !== undefined && (
+              <div>
+                <div className="text-sm text-muted-foreground">高胜率钱包</div>
+                <div className="text-2xl font-bold text-green-600">{latestScan.highWinRateWallets}</div>
+              </div>
+            )}
           </div>
           {latestScan.durationMs && (
             <div className="mt-3 text-sm text-muted-foreground">
@@ -451,6 +548,149 @@ export default function Home() {
                   错误: {latestScan.errorMessage}
                 </span>
               )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* 高胜率钱包实时交易提醒 */}
+      {(highWinRateAlerts.length > 0 || !loadingAlerts) && (
+        <div className="mb-6 rounded-lg border-2 border-green-200 bg-green-50 p-4">
+          <div className="mb-3 flex items-center justify-between">
+            <h2 className="text-lg font-semibold text-green-800">🎯 高胜率钱包交易提醒</h2>
+            <div className="flex gap-2">
+              <Button
+                variant={alertTimeRange === '24h' ? "default" : "outline"}
+                size="sm"
+                onClick={() => {
+                  setAlertTimeRange('24h');
+                  fetchHighWinRateAlerts('24h');
+                }}
+              >
+                24小时
+              </Button>
+              <Button
+                variant={alertTimeRange === '7d' ? "default" : "outline"}
+                size="sm"
+                onClick={() => {
+                  setAlertTimeRange('7d');
+                  fetchHighWinRateAlerts('7d');
+                }}
+              >
+                7天
+              </Button>
+              <Button
+                variant={alertTimeRange === '30d' ? "default" : "outline"}
+                size="sm"
+                onClick={() => {
+                  setAlertTimeRange('30d');
+                  fetchHighWinRateAlerts('30d');
+                }}
+              >
+                30天
+              </Button>
+              <Button
+                variant={alertTimeRange === 'all' ? "default" : "outline"}
+                size="sm"
+                onClick={() => {
+                  setAlertTimeRange('all');
+                  fetchHighWinRateAlerts('all');
+                }}
+              >
+                全部
+              </Button>
+            </div>
+          </div>
+          {loadingAlerts ? (
+            <div className="py-8 text-center text-muted-foreground">加载中...</div>
+          ) : highWinRateAlerts.length === 0 ? (
+            <div className="py-8 text-center text-muted-foreground">
+              暂无{alertTimeRange === '24h' ? '24小时内' : alertTimeRange === '7d' ? '7天内' : alertTimeRange === '30d' ? '30天内' : ''}的高胜率钱包交易提醒
+            </div>
+          ) : (
+            <div className="space-y-3">
+            {highWinRateAlerts.slice(0, 20).map((alert) => (
+              <div
+                key={alert.id}
+                className="rounded-lg border border-green-200 bg-white p-4 hover:bg-green-50"
+              >
+                <div className="mb-2 flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono text-sm font-medium">{formatAddress(alert.walletAddress)}</span>
+                    <button
+                      onClick={() => handleCopyAddress(alert.walletAddress)}
+                      className="text-xs text-muted-foreground hover:text-foreground"
+                    >
+                      复制
+                    </button>
+                    <span className="rounded bg-green-100 px-2 py-0.5 text-xs font-semibold text-green-800">
+                      胜率 {alert.winRate.toFixed(1)}%
+                    </span>
+                    {alert.wallet?.totalProfit !== null && alert.wallet?.totalProfit !== undefined && (
+                      <span className={`text-xs font-semibold ${alert.wallet.totalProfit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                        总盈亏: ${alert.wallet.totalProfit.toFixed(2)}
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-right">
+                    <div className="text-xs text-muted-foreground">
+                      {formatTimeWithRelative(alert.detectedAt)}
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      {alert.tradeCount} 笔交易
+                    </div>
+                  </div>
+                </div>
+                
+                {alert.trades && alert.trades.length > 0 && (
+                  <div className="mt-2 space-y-1">
+                    <div className="text-xs font-medium text-muted-foreground">交易详情：</div>
+                    {alert.trades.slice(0, 3).map((trade: any) => (
+                      <div key={trade.id} className="flex items-center justify-between rounded bg-gray-50 px-2 py-1 text-xs">
+                        <span className="truncate flex-1" title={trade.marketTitle}>
+                          {trade.marketTitle.length > 50 
+                            ? `${trade.marketTitle.slice(0, 50)}...` 
+                            : trade.marketTitle}
+                        </span>
+                        <span className={`ml-2 font-semibold ${trade.isBuy ? 'text-green-600' : 'text-red-600'}`}>
+                          {trade.isBuy ? '买入' : '卖出'} ${trade.amount.toFixed(2)}
+                        </span>
+                        <span className="ml-2 text-muted-foreground">
+                          {formatTimeWithRelative(trade.timestamp)}
+                        </span>
+                      </div>
+                    ))}
+                    {alert.trades.length > 3 && (
+                      <div className="text-xs text-muted-foreground text-center">
+                        +{alert.trades.length - 3} 更多交易
+                      </div>
+                    )}
+                  </div>
+                )}
+                
+                <div className="mt-2 flex gap-2">
+                  <button
+                    onClick={() => {
+                      const wallet = highWinRateWallets.find(w => w.address.toLowerCase() === alert.walletAddress.toLowerCase()) ||
+                                    wallets.find(w => w.address.toLowerCase() === alert.walletAddress.toLowerCase());
+                      if (wallet) {
+                        handleViewWalletDetails(wallet);
+                      }
+                    }}
+                    className="text-xs text-blue-600 hover:text-blue-800 hover:underline"
+                  >
+                    查看完整交易记录
+                  </button>
+                </div>
+              </div>
+            ))}
+            </div>
+          )}
+          {highWinRateAlerts.length > 0 && (
+            <div className="mt-3 text-center text-sm text-muted-foreground">
+              {highWinRateAlerts.length > 20 
+                ? `显示最近 20 条，共 ${highWinRateAlerts.length} 条提醒`
+                : `共 ${highWinRateAlerts.length} 条提醒`}
             </div>
           )}
         </div>
@@ -476,6 +716,11 @@ export default function Home() {
                   {log.suspiciousWallets > 0 && (
                     <span className="ml-2 text-red-600">
                       · {log.suspiciousWallets} 可疑
+                    </span>
+                  )}
+                  {log.highWinRateWallets !== undefined && log.highWinRateWallets > 0 && (
+                    <span className="ml-2 text-green-600">
+                      · {log.highWinRateWallets} 高胜率
                     </span>
                   )}
                 </div>
@@ -635,11 +880,15 @@ export default function Home() {
         </div>
       )}
 
-      {wallets.length === 0 ? (
+      {getDisplayedWallets().length === 0 ? (
         <div className="rounded-lg border p-8 text-center">
-          <p className="text-muted-foreground">暂无监控钱包</p>
+          <p className="text-muted-foreground">
+            {walletFilter === 'high_win_rate' ? '暂无高胜率钱包' : '暂无监控钱包'}
+          </p>
           <p className="mt-2 text-sm text-muted-foreground">
-            点击"刷新"按钮开始扫描
+            {walletFilter === 'high_win_rate' 
+              ? '高胜率钱包会在扫描时自动检测并添加'
+              : '点击"刷新"按钮开始扫描'}
           </p>
         </div>
       ) : (
@@ -649,15 +898,22 @@ export default function Home() {
               <TableRow>
                 <TableHead className="w-12">关注</TableHead>
                 <TableHead>钱包地址</TableHead>
+                <TableHead>类型</TableHead>
                 <TableHead>发现时间</TableHead>
                 <TableHead>风险评分</TableHead>
+                {walletFilter === 'high_win_rate' && (
+                  <>
+                    <TableHead>胜率</TableHead>
+                    <TableHead>总盈亏</TableHead>
+                  </>
+                )}
                 <TableHead>WC/TX Gap</TableHead>
                 <TableHead>关联市场</TableHead>
                 <TableHead>交易数</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {wallets.map((wallet) => (
+              {getDisplayedWallets().map((wallet) => (
                 <TableRow key={wallet.id}>
                   <TableCell>
                     <button
@@ -685,14 +941,31 @@ export default function Home() {
                           <span className="ml-2 text-xs text-green-600">✓ 已复制</span>
                         )}
                       </button>
-                      {wallet.tradeCount > 0 && (
-                        <button
-                          onClick={() => handleViewWalletDetails(wallet)}
-                          className="text-xs text-blue-600 hover:text-blue-800 hover:underline"
-                          title="查看下注详情"
-                        >
-                          查看详情
-                        </button>
+                      <button
+                        onClick={() => handleViewWalletDetails(wallet)}
+                        className="text-xs text-blue-600 hover:text-blue-800 hover:underline"
+                        title="查看下注详情"
+                      >
+                        查看详情
+                      </button>
+                    </div>
+                  </TableCell>
+                  <TableCell>
+                    <div className="flex flex-col gap-1">
+                      {wallet.walletType?.includes('suspicious') && (
+                        <span className="inline-block rounded bg-red-100 px-2 py-0.5 text-xs text-red-800">
+                          可疑
+                        </span>
+                      )}
+                      {wallet.walletType?.includes('high_win_rate') && (
+                        <span className="inline-block rounded bg-green-100 px-2 py-0.5 text-xs text-green-800">
+                          高胜率
+                        </span>
+                      )}
+                      {(!wallet.walletType || wallet.walletType.length === 0) && wallet.riskScore >= 50 && (
+                        <span className="inline-block rounded bg-red-100 px-2 py-0.5 text-xs text-red-800">
+                          可疑
+                        </span>
                       )}
                     </div>
                   </TableCell>
@@ -704,6 +977,28 @@ export default function Home() {
                       {wallet.riskScore.toFixed(1)}
                     </span>
                   </TableCell>
+                  {walletFilter === 'high_win_rate' && (
+                    <>
+                      <TableCell>
+                        {wallet.winRate !== null && wallet.winRate !== undefined ? (
+                          <span className="font-medium text-green-600">
+                            {wallet.winRate.toFixed(1)}%
+                          </span>
+                        ) : (
+                          <span className="text-muted-foreground">-</span>
+                        )}
+                      </TableCell>
+                      <TableCell>
+                        {wallet.totalProfit !== null && wallet.totalProfit !== undefined ? (
+                          <span className={wallet.totalProfit >= 0 ? 'text-green-600' : 'text-red-600'}>
+                            ${wallet.totalProfit.toFixed(2)}
+                          </span>
+                        ) : (
+                          <span className="text-muted-foreground">-</span>
+                        )}
+                      </TableCell>
+                    </>
+                  )}
                   <TableCell className="text-muted-foreground">
                     {wallet.walletCreatedAt && wallet.firstTradeTime
                       ? calculateWcTxGap(wallet.walletCreatedAt, wallet.firstTradeTime)

@@ -83,6 +83,9 @@ export async function GET() {
         lastActiveAt: wallet.lastActiveAt || null,
         updatedAt: wallet.updatedAt,
         isStarred: wallet.is_starred || false, // 是否关注（数据库列名是 is_starred）
+        walletType: wallet.wallet_type || (wallet.riskScore >= 50 ? ['suspicious'] : []),
+        winRate: wallet.win_rate || null,
+        totalProfit: wallet.total_profit || null,
         firstTradeTime: firstTrade?.timestamp || null,
         markets: uniqueMarkets,
         tradeCount: walletTrades.length,
