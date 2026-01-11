@@ -122,10 +122,11 @@ async function processWallet(
       // 注意：如果钱包不在本次扫描中，不会调用此函数，所以这里只处理本次扫描中的钱包
       let isHighWinRateWallet = false;
       try {
-        // 【新增规则】如果本次扫描的交易总金额低于1000，跳过高胜率分析
-        const totalTradeAmount = trades.reduce((sum, t) => sum + t.amount_usdc, 0);
-        if (totalTradeAmount < 1000) {
-          console.log(`[已存在钱包] 钱包 ${normalizedAddress} 本次扫描交易金额 ${totalTradeAmount.toFixed(2)} < 1000，跳过高胜率分析`);
+        // 【新增规则】如果本次扫描的所有单笔交易金额都低于1000，跳过高胜率分析
+        const hasLargeTrade = trades.some(t => t.amount_usdc >= 1000);
+        if (!hasLargeTrade) {
+          const maxTradeAmount = Math.max(...trades.map(t => t.amount_usdc));
+          console.log(`[已存在钱包] 钱包 ${normalizedAddress} 本次扫描最大单笔交易金额 ${maxTradeAmount.toFixed(2)} < 1000，跳过高胜率分析`);
         } else {
           const winRateResult = await calculateWinRate(normalizedAddress);
           if (winRateResult && winRateResult.totalPositions >= 5) {
@@ -482,10 +483,11 @@ async function processWallet(
     // 路径2：如果不可疑，但可能是高胜率钱包
     let isHighWinRateWallet = false;
     try {
-      // 【新增规则】如果本次扫描的交易总金额低于1000，跳过高胜率分析
-      const totalTradeAmount = trades.reduce((sum, t) => sum + t.amount_usdc, 0);
-      if (totalTradeAmount < 1000) {
-        console.log(`[新钱包-高胜率] 钱包 ${normalizedAddress} 本次扫描交易金额 ${totalTradeAmount.toFixed(2)} < 1000，跳过高胜率分析`);
+      // 【新增规则】如果本次扫描的所有单笔交易金额都低于1000，跳过高胜率分析
+      const hasLargeTrade = trades.some(t => t.amount_usdc >= 1000);
+      if (!hasLargeTrade) {
+        const maxTradeAmount = Math.max(...trades.map(t => t.amount_usdc));
+        console.log(`[新钱包-高胜率] 钱包 ${normalizedAddress} 本次扫描最大单笔交易金额 ${maxTradeAmount.toFixed(2)} < 1000，跳过高胜率分析`);
       } else {
         const winRateResult = await calculateWinRate(normalizedAddress);
         if (winRateResult && winRateResult.totalPositions >= 5) {
